@@ -1,0 +1,54 @@
+name: Papers Digest
+
+on:
+  schedule:
+    # Daily pipelines @ 01:07 UTC ≈ 09:07 Beijing
+    - cron: "7 1 * * *"
+    # Weekly pipelines every Friday @ 01:23 UTC ≈ 09:23 Beijing
+    - cron: "23 1 * * 5"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Pipeline target (daily | weekly | both | <pipeline-name>)"
+        required: true
+        default: "both"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Decide target
+        id: t
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "23 1 * * 5" ]; then
+            echo "target=weekly" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=daily" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run
+        run: python scripts/fetch.py "${{ steps.t.outputs.target }}"
+
+      - name: Commit & push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add daily/ weekly/ .state/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "${{ steps.t.outputs.target }}: $(date -u +%Y-%m-%d) digest"
+            git push
+          fi

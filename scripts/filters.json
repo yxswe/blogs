@@ -1,0 +1,27 @@
+{
+  "_comment": "HuggingFace Daily Papers filter config. OR-combined across categories: any match keeps the paper. min_upvotes is an independent AND threshold.",
+
+  "min_upvotes": 50,
+  "top_n": 30,
+  "_comment_top_n": "After sorting by upvotes desc, keep top N; 0 = no limit",
+
+  "organizations": [
+    "DeepMind", "Google", "OpenAI", "Anthropic", "Meta", "Microsoft", "NVIDIA", "Apple",
+    "DeepSeek", "Moonshot", "Alibaba", "Qwen", "ByteDance", "Tencent",
+    "Zhipu", "MiniMax", "01.AI",
+    "Tsinghua", "Peking University", "Stanford", "MIT", "Berkeley", "CMU", "Oxford", "Cambridge"
+  ],
+  "_comment_organizations": "Match against paper.organization.name / fullname (case-insensitive substring)",
+
+  "submitters": [],
+  "_comment_submitters": "Exact HF username match, e.g. ['akhaliq', 'merve']",
+
+  "authors": [],
+  "_comment_authors": "Author name substring match, e.g. ['Ilya Sutskever']",
+
+  "keywords": [],
+  "_comment_keywords": "Case-insensitive substring match against ai_keywords / title / summary",
+
+  "always_include_orgs": ["DeepSeek", "Moonshot", "Anthropic", "OpenAI", "DeepMind", "Qwen", "Zhipu", "MiniMax", "ByteDance"],
+  "_comment_always_include_orgs": "Hits here bypass min_upvotes / top_n (key vendors are always included)"
+}
