@@ -24,6 +24,7 @@ const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
 const home = locale === 'zh' ? base : `${base}en/`;
 const translationKey = (post.data as Record<string, unknown>).translationKey;
 const allPosts = await getCollection('posts');
+const categories = [...new Set(allPosts.flatMap(getTags))];
 const translatedPosts = typeof translationKey === 'string'
   ? allPosts.filter(candidate => (candidate.data as Record<string, unknown>).translationKey === translationKey)
   : [];
@@ -34,7 +35,7 @@ const localeLinks = {
   en: enPost ? `${base}posts/${getSlug(enPost)}/` : `${base}en/`,
 };
 ---
-<BaseLayout locale={locale} title={getTitle(post)} description={getDescription(post)} localeLinks={localeLinks}>
+<BaseLayout locale={locale} title={getTitle(post)} description={getDescription(post)} localeLinks={localeLinks} categories={categories}>
   <header class="article-header">
     <div class="container">
       <a class="back-link" href={`${home}#writing`}>← {copy.back}</a>
@@ -52,7 +53,7 @@ const localeLinks = {
     <article class="prose"><Content /></article>
     {headings.length > 2 && (
       <aside class="toc" aria-label={copy.toc}>
-        <button class="toc-toggle" type="button" aria-expanded="true" aria-label={locale === 'zh' ? '收起文章目录' : 'Collapse table of contents'}>
+        <button class="toc-toggle" type="button" aria-expanded="true" aria-label={locale === 'zh' ? '收起文章目录' : 'Collapse table of contents'} data-expand-label={locale === 'zh' ? '展开文章目录' : 'Expand table of contents'} data-collapse-label={locale === 'zh' ? '收起文章目录' : 'Collapse table of contents'}>
           <span class="toc-title">{copy.toc}</span><span class="toc-chevron" aria-hidden="true">›</span>
         </button>
         <div class="toc-content">
@@ -72,6 +73,7 @@ const localeLinks = {
       const setCollapsed = (collapsed: boolean) => {
         toc.classList.toggle('collapsed', collapsed);
         toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.setAttribute('aria-label', collapsed ? toggle.dataset.expandLabel! : toggle.dataset.collapseLabel!);
       };
       setCollapsed(window.matchMedia('(max-width: 760px)').matches);
       toggle.addEventListener('click', () => setCollapsed(!toc.classList.contains('collapsed')));
