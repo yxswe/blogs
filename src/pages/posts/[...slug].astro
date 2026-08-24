@@ -22,8 +22,19 @@ const sourcePath = post.filePath
 const sourceUrl = `https://github.com/yxswe/blogs/blob/main/${sourcePath}`;
 const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
 const home = locale === 'zh' ? base : `${base}en/`;
+const translationKey = (post.data as Record<string, unknown>).translationKey;
+const allPosts = await getCollection('posts');
+const translatedPosts = typeof translationKey === 'string'
+  ? allPosts.filter(candidate => (candidate.data as Record<string, unknown>).translationKey === translationKey)
+  : [];
+const zhPost = translatedPosts.find(candidate => getLanguage(candidate) === 'zh');
+const enPost = translatedPosts.find(candidate => getLanguage(candidate) === 'en');
+const localeLinks = {
+  zh: zhPost ? `${base}posts/${getSlug(zhPost)}/` : base,
+  en: enPost ? `${base}posts/${getSlug(enPost)}/` : `${base}en/`,
+};
 ---
-<BaseLayout locale={locale} title={getTitle(post)} description={getDescription(post)}>
+<BaseLayout locale={locale} title={getTitle(post)} description={getDescription(post)} localeLinks={localeLinks}>
   <header class="article-header">
     <div class="container">
       <a class="back-link" href={`${home}#writing`}>← {copy.back}</a>
@@ -41,13 +52,32 @@ const home = locale === 'zh' ? base : `${base}en/`;
     <article class="prose"><Content /></article>
     {headings.length > 2 && (
       <aside class="toc" aria-label={copy.toc}>
-        <p class="toc-title">{copy.toc}</p>
-        <ol>
-          {headings.filter(heading => heading.depth >= 2 && heading.depth <= 3).map(heading => (
-            <li class={`depth-${heading.depth}`}><a href={`#${heading.slug}`}>{heading.text}</a></li>
-          ))}
-        </ol>
+        <button class="toc-toggle" type="button" aria-expanded="true" aria-label={locale === 'zh' ? '收起文章目录' : 'Collapse table of contents'}>
+          <span class="toc-title">{copy.toc}</span><span class="toc-chevron" aria-hidden="true">›</span>
+        </button>
+        <div class="toc-content">
+          <ol>
+            {headings.filter(heading => heading.depth >= 2 && heading.depth <= 3).map(heading => (
+              <li class={`depth-${heading.depth}`}><a href={`#${heading.slug}`}>{heading.text}</a></li>
+            ))}
+          </ol>
+        </div>
       </aside>
     )}
   </div>
+  <script>
+    const toc = document.querySelector<HTMLElement>('.toc');
+    const toggle = toc?.querySelector<HTMLButtonElement>('.toc-toggle');
+    if (toc && toggle) {
+      const setCollapsed = (collapsed: boolean) => {
+        toc.classList.toggle('collapsed', collapsed);
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+      };
+      setCollapsed(window.matchMedia('(max-width: 760px)').matches);
+      toggle.addEventListener('click', () => setCollapsed(!toc.classList.contains('collapsed')));
+      toc.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
+        if (window.matchMedia('(max-width: 760px)').matches) setCollapsed(true);
+      }));
+    }
+  </script>
 </BaseLayout>

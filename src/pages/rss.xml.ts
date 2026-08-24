@@ -11,6 +11,6 @@ export async function GET({ site }: { site: URL }) {
     const url = new URL(`posts/${getSlug(post)}/`, base).href;
     return `<item><title>${escapeXml(getTitle(post))}</title><link>${url}</link><guid>${url}</guid><description>${escapeXml(getDescription(post))}</description></item>`;
   }).join('');
-  const xml = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Yangxiao / Field Notes</title><link>${base}</link><description>Notes on engineering, AI, and systems.</description>${items}</channel></rss>`;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>yxswe / Field Notes</title><link>${base}</link><description>Notes on engineering, AI, and systems.</description>${items}</channel></rss>`;
   return new Response(xml, { headers: { 'Content-Type': 'application/rss+xml; charset=utf-8' } });
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title">
+  <title id="title">yxswe cartoon avatar</title>
+  <rect width="240" height="240" rx="120" fill="#dfe9f1"/>
+  <circle cx="120" cy="104" r="61" fill="#f2c9a5"/>
+  <path d="M59 104c0-51 27-78 66-78 36 0 62 25 62 68-15-2-29-10-39-27-20 22-48 34-89 37Z" fill="#34495a"/>
+  <path d="M77 94c-13 2-18 11-15 23 3 11 11 17 21 16M177 94c13 2 18 11 15 23-3 11-11 17-21 16" fill="none" stroke="#e8b991" stroke-width="8" stroke-linecap="round"/>
+  <g fill="none" stroke="#516c82" stroke-width="6">
+    <rect x="77" y="91" width="35" height="27" rx="11"/>
+    <rect x="128" y="91" width="35" height="27" rx="11"/>
+    <path d="M112 102h16"/>
+  </g>
+  <circle cx="96" cy="104" r="4" fill="#30343a"/>
+  <circle cx="146" cy="104" r="4" fill="#30343a"/>
+  <path d="M105 137c10 8 21 8 31 0" fill="none" stroke="#a96161" stroke-width="5" stroke-linecap="round"/>
+  <path d="M46 240c6-48 32-74 74-74s68 26 74 74" fill="#657f99"/>
+  <path d="m96 166 24 25 24-25" fill="#fff" opacity=".9"/>
+</svg>

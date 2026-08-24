@@ -2,25 +2,28 @@
 import type { Locale } from '../lib/posts';
 import { t } from '../i18n';
 
-interface Props { locale: Locale; }
-const { locale } = Astro.props;
+interface Props { locale: Locale; localeLinks?: { zh: string; en: string }; }
+const { locale, localeLinks } = Astro.props;
 const copy = t(locale);
 const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
 const home = locale === 'zh' ? base : `${base}en/`;
+const zhUrl = localeLinks?.zh ?? base;
+const enUrl = localeLinks?.en ?? `${base}en/`;
 ---
-<header class="site-header">
+<header class="site-header" data-base={base} data-zh-url={zhUrl} data-en-url={enUrl}>
   <div class="mobile-bar">
-    <a class="mobile-brand" href={home}>Yangxiao</a>
+    <a class="mobile-brand" href={home}>yxswe</a>
     <div class="locale-switch" aria-label="Language">
-      <a class:list={{ active: locale === 'zh' }} href={base} lang="zh">中</a>
-      <a class:list={{ active: locale === 'en' }} href={`${base}en/`} lang="en">EN</a>
+      <a data-locale="auto" href={home}>自动</a>
+      <a data-locale="zh" class:list={{ active: locale === 'zh' }} href={zhUrl} lang="zh">中</a>
+      <a data-locale="en" class:list={{ active: locale === 'en' }} href={enUrl} lang="en">EN</a>
     </div>
   </div>
   <aside class="sidebar" aria-label="Sidebar">
     <div>
       <a class="profile" href={home} aria-label={copy.siteName}>
-        <span class="avatar">YX</span>
-        <strong>Yangxiao</strong>
+        <img class="avatar" src={`${base}avatar.svg`} alt="yxswe cartoon avatar" />
+        <strong>yxswe</strong>
       </a>
       <p class="sidebar-intro">{locale === 'zh' ? '记录 AI、软件工程与复杂系统。' : 'Notes on AI, software engineering, and complex systems.'}</p>
       <nav class="side-nav" aria-label="Main navigation">
@@ -31,10 +34,36 @@ const home = locale === 'zh' ? base : `${base}en/`;
     </div>
     <div class="sidebar-bottom">
       <div class="locale-switch" aria-label="Language">
-        <a class:list={{ active: locale === 'zh' }} href={base} lang="zh">中文</a>
-        <a class:list={{ active: locale === 'en' }} href={`${base}en/`} lang="en">English</a>
+        <a data-locale="auto" href={home}>跟随系统</a>
+        <a data-locale="zh" class:list={{ active: locale === 'zh' }} href={zhUrl} lang="zh">中</a>
+        <a data-locale="en" class:list={{ active: locale === 'en' }} href={enUrl} lang="en">EN</a>
       </div>
       <a href={`${base}rss.xml`}>RSS</a>
     </div>
   </aside>
+  <script>
+    const header = document.querySelector<HTMLElement>('.site-header');
+    if (header) {
+      const choices = [...header.querySelectorAll<HTMLAnchorElement>('[data-locale]')];
+      const systemLocale = () => navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+      const targetFor = (locale: string) => locale === 'zh' ? header.dataset.zhUrl! : header.dataset.enUrl!;
+      const preference = localStorage.getItem('yxswe-locale') || 'auto';
+      choices.forEach(choice => choice.classList.toggle('active', choice.dataset.locale === preference));
+
+      choices.forEach(choice => choice.addEventListener('click', event => {
+        event.preventDefault();
+        const selected = choice.dataset.locale || 'auto';
+        localStorage.setItem('yxswe-locale', selected);
+        window.location.href = targetFor(selected === 'auto' ? systemLocale() : selected);
+      }));
+
+      const base = header.dataset.base!;
+      const path = window.location.pathname.replace(/\/+$/, '/');
+      const isHome = path === base || path === `${base}en/`;
+      if (preference === 'auto' && isHome) {
+        const target = targetFor(systemLocale());
+        if (path !== target) window.location.replace(target);
+      }
+    }
+  </script>
 </header>

@@ -1,4 +1,4 @@
-# Yangxiao's bilingual blog
+# yxswe's bilingual blog
 
 一个由仓库内 Markdown 文件驱动的中英双语个人博客，使用 [Astro](https://astro.build/) 构建并部署到 GitHub Pages。
 
@@ -32,6 +32,7 @@ my-new-post/
 title: 文章标题
 description: 一句话摘要
 lang: zh # 或 en
+translationKey: article-unique-key # 中英文版本使用相同值
 date: 2026-08-24
 tags:
   - AI
@@ -39,6 +40,16 @@ tags:
 featured: false
 ---
 ```
+
+同一篇文章的中文和英文文件使用相同的 `translationKey`，语言切换器就会直接跳转到对应译文。例如：
+
+```text
+deepseek-harness/
+├── README.md  # lang: zh, translationKey: deepseek-harness
+└── en.md      # lang: en, translationKey: deepseek-harness
+```
+
+默认语言选择为“跟随系统”，访客手动选择中文或英文后，网站会在浏览器中记住该选择。缺少对应译文时，切换语言会返回相应语言的首页。
 
 然后正常书写 Markdown 即可。提交到 `main` 后，GitHub Actions 会自动重新构建和发布网站。
 
