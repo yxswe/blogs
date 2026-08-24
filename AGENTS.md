@@ -11,3 +11,13 @@
 - Before finishing any content change, run `npm run check:bilingual` and `npm run build`. Do not commit or push if either command fails.
 
 The bilingual validator in `scripts/check-bilingual.mjs` is the executable source of truth for pair completeness and metadata consistency.
+
+## One article per development branch
+
+- Each development branch must be dedicated to exactly one blog article, including its Chinese and English files.
+- Do not add or substantially edit multiple article directories on the same development branch. Move unrelated article work to a separate branch.
+- Repository-wide supporting changes required by that article are allowed, but they must remain directly related to the article being developed.
+
+## Pull request language
+
+- Write every pull request title and description entirely in English.
