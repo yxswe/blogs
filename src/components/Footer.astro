@@ -5,9 +5,8 @@ const { locale } = Astro.props as { locale: Locale };
 const copy = t(locale);
 ---
 <footer class="site-footer">
-  <div class="footer-inner container">
+  <div class="footer-inner">
     <span>© {new Date().getFullYear()} Yangxiao</span>
     <span>{copy.footer}</span>
-    <a href="https://github.com/yxswe/blogs">GitHub ↗</a>
   </div>
 </footer>
