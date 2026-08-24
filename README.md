@@ -57,7 +57,7 @@ deepseek-harness/
 
 对中文正文进行实质修改时，必须在同一次提交中同步更新英文译文，反之亦然。适用于 Agent 的完整内容规则见 [`AGENTS.md`](./AGENTS.md)。
 
-站点会读取仓库中除 `README.md`、`CONTRIBUTING.md`、`.github/`、`src/` 和 `node_modules/` 以外的全部 Markdown 文件。目录名会成为文章 URL，例如 `DSH/README.md` 对应 `/posts/dsh/`。没有元数据的旧文章也可以使用：标题取第一个一级标题，语言根据正文自动判断。
+站点会读取仓库中除 `README.md`、`CONTRIBUTING.md`、`.github/`、`src/` 和 `node_modules/` 以外的全部 Markdown 文件。目录名会成为文章 URL，例如 `DSH/cordis/README.md` 对应 `/posts/dsh/cordis/`。没有元数据的旧文章也可以使用：标题取第一个一级标题，语言根据正文自动判断。
 
 ## 首次启用 GitHub Pages
 
