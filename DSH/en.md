@@ -5,8 +5,8 @@ lang: en
 translationKey: deepseek-harness
 date: 2026-08-24
 tags:
-  - AI Agent
-  - DSH
+  - Agent Harness
+  - DeepSeek
 featured: true
 ---
 
