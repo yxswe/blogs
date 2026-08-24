@@ -32,7 +32,7 @@ button { color: inherit; }
 .profile-block { padding: 8px 16px 42px; }
 .profile { display: block; width: 92px; height: 92px; margin: 0 auto 18px; text-decoration: none; }
 .avatar { display: block; width: 92px; height: 92px; object-fit: cover; background: var(--accent-soft); border: 2px solid var(--white); border-radius: 50%; }
-.profile-title { display: flex; margin-bottom: 8px; align-items: center; gap: 9px; }
+.profile-title { display: flex; margin-bottom: 8px; align-items: center; justify-content: center; gap: 9px; }
 .profile-title > a:first-child { color: var(--accent); font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -.02em; text-decoration: none; }
 .github-icon { display: grid; color: var(--muted); place-items: center; transition: color .18s ease; }
 .github-icon:hover { color: var(--accent); }
