@@ -1,3 +1,14 @@
+---
+title: DeepSeek Harness 学习笔记
+description: 深入理解 DeepSeek Harness 的架构、插件能力、请求流程，以及 Cordis 框架的设计方式。
+lang: zh
+date: 2026-08-24
+tags:
+  - AI Agent
+  - DSH
+featured: true
+---
+
 # DeepSeek Harness 学习笔记
 
 > 本文整理对 DeepSeek Harness（DSH）的架构、插件能力、请求流程和 Cordis 框架的研究结果。内容基于 2026 年 8 月的项目源码。

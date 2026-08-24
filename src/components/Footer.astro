@@ -1,0 +1,13 @@
+---
+import type { Locale } from '../lib/posts';
+import { t } from '../i18n';
+const { locale } = Astro.props as { locale: Locale };
+const copy = t(locale);
+---
+<footer class="site-footer">
+  <div class="footer-inner container">
+    <span>© {new Date().getFullYear()} Yangxiao</span>
+    <span>{copy.footer}</span>
+    <a href="https://github.com/yxswe/blogs">GitHub ↗</a>
+  </div>
+</footer>

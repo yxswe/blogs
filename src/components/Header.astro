@@ -1,0 +1,29 @@
+---
+import type { Locale } from '../lib/posts';
+import { t } from '../i18n';
+
+interface Props { locale: Locale; }
+const { locale } = Astro.props;
+const copy = t(locale);
+const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+const home = locale === 'zh' ? base : `${base}en/`;
+---
+<header class="site-header">
+  <nav class="nav container" aria-label="Main navigation">
+    <a class="brand" href={home} aria-label={copy.siteName}>
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>{copy.siteName}</span>
+    </a>
+    <div class="nav-links">
+      <a href={`${home}#writing`}>{copy.navWriting}</a>
+      <a href={`${home}#about`}>{copy.navAbout}</a>
+    </div>
+    <div class="nav-actions">
+      <a class="source-link" href="https://github.com/yxswe/blogs" target="_blank" rel="noreferrer">{copy.navSource} ↗</a>
+      <div class="locale-switch" aria-label="Language">
+        <a class:list={{ active: locale === 'zh' }} href={base} lang="zh">中</a>
+        <a class:list={{ active: locale === 'en' }} href={`${base}en/`} lang="en">EN</a>
+      </div>
+    </div>
+  </nav>
+</header>

@@ -1,0 +1,111 @@
+---
+import type { Locale, Post } from '../lib/posts';
+import { getDate, getDescription, getLanguage, getReadingTime, getSlug, getTags, getTitle } from '../lib/posts';
+import { t } from '../i18n';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+interface Props { locale: Locale; posts: Post[]; }
+const { locale, posts } = Astro.props;
+const copy = t(locale);
+const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+const tags = [...new Set(posts.flatMap(getTags))].slice(0, 6);
+const dateFormatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+---
+<BaseLayout locale={locale}>
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">{copy.eyebrow}</p>
+      <h1>{copy.headlineA}<em>{copy.headlineB}</em></h1>
+      <p class="hero-intro">{copy.intro}</p>
+      <div class="hero-buttons">
+        <a class="button primary" href="#writing">{copy.explore} <span>↓</span></a>
+        <a class="button" href="https://github.com/yxswe/blogs">{copy.source} <span>↗</span></a>
+      </div>
+    </div>
+    <aside class="hero-aside" aria-hidden="true">
+      <div class="orbit"><span class="orbit-dot"></span></div>
+      <p class="hero-note">001—{String(posts.length).padStart(3, '0')}<br />{copy.allLanguages}</p>
+    </aside>
+  </section>
+
+  <section class="writing container" id="writing">
+    <div class="section-heading">
+      <h2>{copy.latest}</h2>
+      <span class="section-count">{String(posts.length).padStart(2, '0')} {copy.article}</span>
+    </div>
+    <div class="filter-row">
+      <div class="filters" role="group" aria-label="Article filters">
+        <button class="filter active" type="button" data-filter="all">{copy.all}</button>
+        <button class="filter" type="button" data-filter="zh">中文</button>
+        <button class="filter" type="button" data-filter="en">English</button>
+        {tags.map(tag => <button class="filter" type="button" data-filter={tag.toLowerCase()}>{tag}</button>)}
+      </div>
+      <label class="search-wrap">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+        <span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">{copy.search}</span>
+        <input class="search" type="search" placeholder={copy.search} autocomplete="off" />
+      </label>
+    </div>
+    <div class="post-list">
+      {posts.map((post, index) => {
+        const language = getLanguage(post);
+        const date = getDate(post);
+        const searchable = `${getTitle(post)} ${getDescription(post)} ${getTags(post).join(' ')}`.toLowerCase();
+        const filters = [language, ...getTags(post).map(tag => tag.toLowerCase())].join(' ');
+        return (
+          <a class="post-card" href={`${base}posts/${getSlug(post)}/`} data-search={searchable} data-filters={filters}>
+            <span class="post-index">{String(index + 1).padStart(2, '0')}</span>
+            <div class="post-main">
+              <h3>{getTitle(post)}</h3>
+              <p>{getDescription(post)}</p>
+            </div>
+            <div class="post-meta">
+              <span class="lang-badge">{language === 'zh' ? '中文' : 'EN'}</span>
+              <span>{date ? dateFormatter.format(date) : getReadingTime(post, locale)}</span>
+              <span class="post-arrow" aria-hidden="true">→</span>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+    <p class="empty">{copy.empty}</p>
+  </section>
+
+  <section class="about" id="about">
+    <div class="about-grid container">
+      <div>
+        <span class="about-label">About / 关于</span>
+        <h2>{copy.aboutTitle}</h2>
+      </div>
+      <div class="about-copy">
+        <p>{copy.aboutBody}</p>
+        <a class="button" style="color:var(--paper);border-color:#777" href="https://github.com/yxswe">GitHub Profile ↗</a>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const search = document.querySelector<HTMLInputElement>('.search');
+    const filters = [...document.querySelectorAll<HTMLButtonElement>('.filter')];
+    const cards = [...document.querySelectorAll<HTMLElement>('.post-card')];
+    const empty = document.querySelector<HTMLElement>('.empty');
+    let active = 'all';
+    const update = () => {
+      const query = search?.value.trim().toLowerCase() || '';
+      let visible = 0;
+      cards.forEach(card => {
+        const inFilter = active === 'all' || card.dataset.filters?.split(' ').includes(active);
+        const inSearch = !query || card.dataset.search?.includes(query);
+        card.hidden = !(inFilter && inSearch);
+        if (!card.hidden) visible++;
+      });
+      if (empty) empty.style.display = visible ? 'none' : 'block';
+    };
+    filters.forEach(button => button.addEventListener('click', () => {
+      active = button.dataset.filter || 'all';
+      filters.forEach(item => item.classList.toggle('active', item === button));
+      update();
+    }));
+    search?.addEventListener('input', update);
+  </script>
+</BaseLayout>

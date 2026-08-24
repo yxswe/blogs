@@ -1,0 +1,7 @@
+---
+import { getCollection } from 'astro:content';
+import HomePage from '../components/HomePage.astro';
+import { sortPosts } from '../lib/posts';
+const posts = sortPosts(await getCollection('posts'));
+---
+<HomePage locale="zh" posts={posts} />

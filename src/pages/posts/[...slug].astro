@@ -1,0 +1,53 @@
+---
+import { getCollection, render } from 'astro:content';
+import { relative } from 'node:path';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getDate, getDescription, getLanguage, getReadingTime, getSlug, getTags, getTitle, type Post } from '../../lib/posts';
+import { t } from '../../i18n';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('posts');
+  return posts.map(post => ({ params: { slug: getSlug(post) }, props: { post } }));
+}
+
+const { post } = Astro.props as { post: Post };
+const { Content, headings } = await render(post);
+const locale = getLanguage(post);
+const copy = t(locale);
+const date = getDate(post);
+const formattedDate = date && new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' }).format(date);
+const sourcePath = post.filePath
+  ? relative(process.cwd(), post.filePath).replaceAll('\\', '/')
+  : (post.id.endsWith('.md') ? post.id : `${post.id}.md`);
+const sourceUrl = `https://github.com/yxswe/blogs/blob/main/${sourcePath}`;
+const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+const home = locale === 'zh' ? base : `${base}en/`;
+---
+<BaseLayout locale={locale} title={getTitle(post)} description={getDescription(post)}>
+  <header class="article-header">
+    <div class="container">
+      <a class="back-link" href={`${home}#writing`}>← {copy.back}</a>
+      <h1>{getTitle(post)}</h1>
+      <p class="article-dek">{getDescription(post)}</p>
+      <div class="article-info">
+        <span>{getReadingTime(post, locale)}</span>
+        {formattedDate && <span>{copy.updated} {formattedDate}</span>}
+        {getTags(post).map(tag => <span>#{tag}</span>)}
+        <a href={sourceUrl}>{copy.sourceFile} ↗</a>
+      </div>
+    </div>
+  </header>
+  <div class="article-layout container">
+    <article class="prose"><Content /></article>
+    {headings.length > 2 && (
+      <aside class="toc" aria-label={copy.toc}>
+        <p class="toc-title">{copy.toc}</p>
+        <ol>
+          {headings.filter(heading => heading.depth >= 2 && heading.depth <= 3).map(heading => (
+            <li class={`depth-${heading.depth}`}><a href={`#${heading.slug}`}>{heading.text}</a></li>
+          ))}
+        </ol>
+      </aside>
+    )}
+  </div>
+</BaseLayout>
