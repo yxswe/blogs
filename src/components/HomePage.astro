@@ -26,17 +26,15 @@ const dateFormatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US
       <h1 class="sr-only">{locale === 'zh' ? '文章' : 'Writing'}</h1>
       <div class="post-list">
         {localizedPosts.map((post) => {
-          const language = getLanguage(post);
           const date = getDate(post);
           const searchable = `${getTitle(post)} ${getDescription(post)} ${getTags(post).join(' ')}`.toLowerCase();
-          const filters = [language, ...getTags(post).map(tag => tag.toLowerCase())].join('|');
+          const filters = getTags(post).map(tag => tag.toLowerCase()).join('|');
           return (
             <article class="post-card-wrap" data-search={searchable} data-filters={filters}>
               <a class="post-card" href={`${base}posts/${getSlug(post)}/`}>
                 <span class="card-marker" aria-hidden="true"></span>
                 <div class="post-card-heading">
                   <h2>{getTitle(post)}</h2>
-                  <span class="lang-badge">{language === 'zh' ? '中文' : 'EN'}</span>
                 </div>
                 <p>{getDescription(post)}</p>
                 <div class="post-meta">

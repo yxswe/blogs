@@ -11,7 +11,7 @@ const copy = {
     search: '搜索文章…', empty: '没有找到匹配的文章。', article: '篇文章',
     allLanguages: '中英双语内容', aboutTitle: '持续理解，持续构建。',
     aboutBody: '我关注复杂系统如何被设计、实现与解释。这个网站的每篇文章都直接来自 GitHub 仓库中的 Markdown 文件。',
-    back: '返回文章', toc: '本页目录', updated: '发布于', sourceFile: '在 GitHub 编辑',
+    back: '返回文章', toc: '本页目录', updated: '发布于',
     footer: '以代码与文字，记录正在发生的思考。', skip: '跳到正文',
   },
   en: {
@@ -24,7 +24,7 @@ const copy = {
     search: 'Search articles…', empty: 'No matching articles found.', article: 'articles',
     allLanguages: 'Writing in English & Chinese', aboutTitle: 'Keep learning. Keep building.',
     aboutBody: 'I care about how complex systems are designed, implemented, and explained. Every article on this site is sourced directly from a Markdown file in the GitHub repository.',
-    back: 'Back to writing', toc: 'On this page', updated: 'Published', sourceFile: 'Edit on GitHub',
+    back: 'Back to writing', toc: 'On this page', updated: 'Published',
     footer: 'Tracing ideas in code and words.', skip: 'Skip to content',
   },
 } as const;
