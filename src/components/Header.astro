@@ -65,7 +65,6 @@ const enUrl = localeLinks?.en ?? `${base}en/`;
 
     <div class="sidebar-bottom">
       <div class="locale-switch" aria-label="Language">
-        <a data-locale="auto" href={home}>{locale === 'zh' ? '跟随系统' : 'System'}</a>
         <a data-locale="zh" class:list={{ active: locale === 'zh' }} href={zhUrl} lang="zh">中文</a>
         <a data-locale="en" class:list={{ active: locale === 'en' }} href={enUrl} lang="en">EN</a>
       </div>
@@ -77,24 +76,18 @@ const enUrl = localeLinks?.en ?? `${base}en/`;
     const header = document.querySelector<HTMLElement>('.site-header');
     if (header) {
       const choices = [...header.querySelectorAll<HTMLAnchorElement>('[data-locale]')];
-      const systemLocale = () => navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
       const targetFor = (locale: string) => locale === 'zh' ? header.dataset.zhUrl! : header.dataset.enUrl!;
-      const preference = localStorage.getItem('yxswe-locale') || 'auto';
+      const storedLocale = localStorage.getItem('yxswe-locale');
+      const preference = storedLocale === 'zh' || storedLocale === 'en'
+        ? storedLocale
+        : (document.documentElement.lang.startsWith('zh') ? 'zh' : 'en');
       choices.forEach(choice => choice.classList.toggle('active', choice.dataset.locale === preference));
       choices.forEach(choice => choice.addEventListener('click', event => {
         event.preventDefault();
-        const selected = choice.dataset.locale || 'auto';
+        const selected = choice.dataset.locale || preference;
         localStorage.setItem('yxswe-locale', selected);
-        window.location.href = targetFor(selected === 'auto' ? systemLocale() : selected);
+        window.location.href = targetFor(selected);
       }));
-
-      const base = header.dataset.base!;
-      const path = window.location.pathname.replace(/\/+$/, '/');
-      const isHome = path === base || path === `${base}en/`;
-      if (preference === 'auto' && isHome) {
-        const target = targetFor(systemLocale());
-        if (path !== target) window.location.replace(target);
-      }
 
       const toggle = header.querySelector<HTMLButtonElement>('.sidebar-toggle');
       const scrim = header.querySelector<HTMLButtonElement>('.sidebar-scrim');

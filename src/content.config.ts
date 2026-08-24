@@ -11,6 +11,7 @@ const posts = defineCollection({
       '!.github/**',
       '!README.md',
       '!CONTRIBUTING.md',
+      '!AGENTS.md',
     ],
   }),
 });

@@ -8,7 +8,8 @@ interface Props { locale: Locale; posts: Post[]; }
 const { locale, posts } = Astro.props;
 const copy = t(locale);
 const base = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
-const tags = [...new Set(posts.flatMap(getTags))];
+const localizedPosts = posts.filter(post => getLanguage(post) === locale);
+const tags = [...new Set(localizedPosts.flatMap(getTags))];
 const dateFormatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 ---
 <BaseLayout locale={locale} categories={tags}>
@@ -24,11 +25,11 @@ const dateFormatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US
     <section class="writing" id="writing">
       <h1 class="sr-only">{locale === 'zh' ? '文章' : 'Writing'}</h1>
       <div class="post-list">
-        {posts.map((post) => {
+        {localizedPosts.map((post) => {
           const language = getLanguage(post);
           const date = getDate(post);
           const searchable = `${getTitle(post)} ${getDescription(post)} ${getTags(post).join(' ')}`.toLowerCase();
-          const filters = [language, ...getTags(post).map(tag => tag.toLowerCase())].join(' ');
+          const filters = [language, ...getTags(post).map(tag => tag.toLowerCase())].join('|');
           return (
             <article class="post-card-wrap" data-search={searchable} data-filters={filters}>
               <a class="post-card" href={`${base}posts/${getSlug(post)}/`}>
@@ -63,7 +64,7 @@ const dateFormatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US
       const query = search?.value.trim().toLowerCase() || '';
       let visible = 0;
       cards.forEach(card => {
-        const inFilter = active === 'all' || card.dataset.filters?.split(' ').includes(active);
+        const inFilter = active === 'all' || card.dataset.filters?.split('|').includes(active);
         const inSearch = !query || card.dataset.search?.includes(query);
         card.hidden = !(inFilter && inSearch);
         if (!card.hidden) visible++;

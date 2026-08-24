@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro check && astro build",
+    "check:bilingual": "node scripts/check-bilingual.mjs",
+    "build": "npm run check:bilingual && astro check && astro build",
     "preview": "astro preview"
   },
   "dependencies": {
