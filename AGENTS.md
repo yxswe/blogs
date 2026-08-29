@@ -12,6 +12,10 @@
 
 The bilingual validator in `scripts/check-bilingual.mjs` is the executable source of truth for pair completeness and metadata consistency.
 
+## Contextual coherence
+
+- After every content edit, reread the surrounding paragraphs and subsection as a whole. Ensure the revised text connects naturally with what comes before and after, keeps terminology consistent, and introduces no repetition, contradiction, abrupt transition, or dangling reference; revise adjacent text when necessary.
+
 ## One article per development branch
 
 - Each development branch must be dedicated to exactly one blog article, including its Chinese and English files.
