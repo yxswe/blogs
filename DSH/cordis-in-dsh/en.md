@@ -1,346 +1,581 @@
 ---
-title: "How DSH Is Built on Cordis"
-description: Starting from Cordis's dynamic-composition model, this article follows boot, the Agent Loop, Sessions, Services, and Agent Presets to explain the architecture and plugin boundaries of DeepSeek Harness.
+title: "How DSH Builds a Component Runtime on Cordis"
+description: Using the Web Profile as an example, this article explains how DSH composes a component tree from bundles and patches, then uses Context, Registry, Fiber, Reflect, and Loader during Boot to build and dynamically update the runtime.
 lang: en
 translationKey: dsh-cordis-architecture
 date: 2026-08-24
 tags:
-  - Agent Harness
-  - DeepSeek
+  - DeepSeek Harness
+  - Cordis
 featured: false
 ---
 
-# How DSH Is Built on Cordis
+## 1. DSH's Real Entry Point: How a Profile Builds the Component Tree
 
-The previous article explained Cordis's Revertible Effects, Reactive Coeffects, Contexts, and Fibers from the paper. This article takes a different view. Instead of studying Cordis in isolation, it follows the actual [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) code to answer five questions:
+A conventional application often creates its database, model client, tools, and Web server in sequence inside a fixed `main()`. The DSH command-line entry point does something smaller but more consequential: it finds the selected **Profile**, merges the configuration layers declared by that Profile into a Cordis component tree, and hands the result to the Loader.
 
-1. Where does Cordis sit inside DSH?
-2. What does DSH mean by an Agent?
-3. Which major Services make up the system?
-4. Which capabilities can be replaced, and how does replacement work?
-5. Where does “everything is a plugin” stop?
+Using the built-in Web surface as the example, these two commands mean the same thing:
 
-The short answer is:
-
-> Cordis does not define an Agent. It provides the runtime rules for organizing a dynamic system. DSH defines domain contracts such as Agent, Session, LLM, and Tools on top, supplies their default implementations as plugins, and uses configuration to compose those implementations into a working harness.
-
-## 1. A Brief Return to the Cordis Paper: It Defines Composition Rules
-
-The Cordis paper, [*A Programming Paradigm for Spatiotemporal Composability*](https://github.com/cordiverse/paper/blob/main/paper.pdf), is not about agents. It studies a more fundamental problem: when components can join, leave, or be replaced at runtime, how can the system remain consistent?
-
-The paper separates the problem into two dimensions:
-
-| Problem | Cordis's answer |
-| --- | --- |
-| When a component leaves, how are its listeners, Services, background tasks, and other modifications reversed? | Revertible Effects: when a component creates an effect, it also registers cleanup; the runtime executes cleanup in reverse order during unload. |
-| When a Service appears, disappears, or changes implementation, how should dependent components respond? | Reactive Coeffects: components declare dependencies, and the runtime re-evaluates them after Service changes, activating, unloading, or reloading components as needed. |
-
-The two mechanisms meet in `Context`: components read Services from a Context and modify the Context through Effects. Each running component instance is a `Fiber`, which stores its dependency snapshot, lifecycle state, and cleanup operations. The Loader turns declarative configuration into a Fiber tree and reconciles configuration or hot-module changes.
-
-Cordis is therefore a meta-framework. It does not require models, tools, or Sessions; it supplies this general grammar:
-
-```text
-A component declares the Services it needs
-          ↓
-Cordis activates its Fiber when those dependencies are available
-          ↓
-The component provides Services, registers listeners, or creates other Effects
-          ↓
-Service changes cause dependent lifecycles to be re-evaluated
-          ↓
-When the component leaves, Cordis reverses the Effects recorded by its Fiber
+```sh
+dsh web
+dsh --profile web
 ```
 
-DSH puts the product concepts of an agent harness into that grammar.
-
-## 2. The DSH System: Configuration Comes Before the Code Entry Point
-
-A conventional application often has a fixed `main()` that creates a database, model client, tools, and Web server in order. DSH starts differently: the entry point first resolves a Profile, then combines several configuration layers into a Cordis component tree.
-
-The default composition looks roughly like this:
+On the first run, DSH initializes `$DSH_HOME/profiles/web` automatically. The initial directory is small:
 
 ```text
-Profile
-├── dsh-base: shared Session, Agent, LLM, Tools, persistence, Sandbox, and more
-├── dsh-web-app or dsh-headless: browser surface or one-shot task entry
-├── the Profile's cordis.patch.yml
-├── the Harness Home patch
-└── command-line --patch overlays
-          ↓
-Final Cordis configuration tree
-          ↓
-Loader imports components and creates Fibers
-          ↓
-Components activate when their dependencies are satisfied
+$DSH_HOME/profiles/web/
+├── package.json          # Profile manifest: dependencies and ordered bundles
+├── cordis.patch.yml      # This Profile's own component-tree patch
+├── pnpm-workspace.yaml   # pnpm installation rules for external components
+└── cordis.yml            # Generated empty root; do not edit by hand
 ```
 
-A later patch can address an earlier row by stable `id`, replace its configuration, disable it, or insert another component. Row order is not boot order; declared Service dependencies determine activation. This is Reactive Coeffects applied directly to DSH startup.
+### 1.1 `package.json`: what code is available and which bundles are loaded
 
-The [`dsh-base` configuration](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/bundle/base/cordis.patch.yml) is not a small set of optional extensions. It is the product's default implementation: the Agent, Loop, model adapters, Session persistence, tools, permissions, Sandbox, Skills, Subagents, Compaction, and Web Search are all ordinary rows. The [Web Bundle](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/bundle/web-app/cordis.patch.yml) adds the Host API, HTTP server, and browser plugins, while moving per-Agent tools into Agent Presets.
+To understand this file, first distinguish ordinary components from bundles:
 
-The first step in understanding a running DSH system is therefore not finding one privileged main function, but inspecting the final composition:
+- An **ordinary component** is one runnable unit in the component tree, usually delivered as a standalone npm package.
+- A **bundle** groups multiple components and uses **the bundle package's own** `cordis.patch.yml` to describe how they enter the component tree; `@deepseek-ai/dsh-web-app` is one example. The bundle itself is not a runtime component—the component rows it contributes are what run.
+
+At the Profile level, `dependencies` records installed external packages, while `dsh.profile.bundles` lists the bundles to apply in order. The built-in Web Profile starts with this manifest:
+
+```json
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}
+```
+
+These bundles ship with DSH, so `dependencies` starts empty. DSH applies `dsh-base` first, supplying shared Agent, Session, LLM, Tools, persistence, and Sandbox capabilities. It then applies `dsh-web-app`, which adds the Host API, HTTP server, and browser components. A later bundle can override an earlier row by targeting the same `id`.
+
+Using `dsh-web-app` as the example, a bundle's core directory structure is:
+
+```text
+packages/bundle/web-app/
+├── package.json          # Declares dsh.bundle.patch and component dependencies
+├── cordis.patch.yml      # The bundle's own component-tree patch
+└── src/                  # Source for components shipped by the bundle
+```
+
+The `dsh.bundle.patch` field in `package.json` points to `cordis.patch.yml` inside the same package. This file defines the bundle's default components; it is not the user's `$DSH_HOME/profiles/web/cordis.patch.yml`, which adds or overrides content for that Profile.
+
+### 1.2 `cordis.patch.yml`: composing the component tree under `cordis.yml`
+
+`cordis.yml` is an empty root. Each `cordis.patch.yml` describes part of the component subtree mounted below it. The Web Profile applies these patches in order:
+
+```text
+dsh-base/cordis.patch.yml
+          ↓
+dsh-web-app/cordis.patch.yml
+          ↓
+$DSH_HOME/profiles/web/cordis.patch.yml
+          ↓
+$DSH_HOME/cordis.patch.yml
+          ↓
+command-line --patch layers, if any
+          ↓
+final component tree under cordis.yml
+```
+
+Each patch may insert component rows or modify and disable an existing row through the same `id`. Later patches take precedence: `dsh-web-app` can override `dsh-base`, and the Profile patch can override every bundle. A `config` override replaces the whole value rather than deep-merging its fields.
+
+Inspect the result without starting the Web server:
 
 ```sh
 dsh --profile web --dump-config
 ```
 
-That output is the system the machine actually boots.
+### 1.3 Two Ways to Add Components
 
-## 3. Component, Service, and Event Have Different Jobs
+A component passes through three stages before it runs:
 
-These concepts are easy to conflate, but they play distinct roles.
+| Stage | Meaning |
+| --- | --- |
+| Installation | The component package can be resolved. External packages enter the Profile `package.json` under `dependencies`; built-in packages ship with DSH. |
+| Registration | A patch places the component as a row in the final component tree. A patch only decides whether the row exists. |
+| Activation | The Loader imports the component and creates a Fiber; Cordis activates that Fiber after its required Services become available. |
 
-### Component: an implementation with a lifecycle
+An installed but unregistered component does not run. A registered component whose dependencies are not yet satisfied waits.
 
-A Cordis plugin is a Component. It may be a function, an object with `apply(ctx)`, or a class extending `Service`. One Loader configuration row mounts one Component and creates a Fiber.
+#### Option one: add a component directly
 
-A Component may provide a Service, but it may instead only register a tool, prompt section, or event listener. Components and Services are therefore not one-to-one.
+An individual component represents one instance in the tree. Consider the MCP Client that ships with DSH but is inactive by default. It is already resolvable from the DSH installation, so no installation command is needed. Connecting one MCP server only requires editing `$DSH_HOME/profiles/web/cordis.patch.yml`:
 
-### Service: a stable name through which components use a capability
-
-A Service exposes a capability from Context as `ctx.<key>`. For example:
-
-- `ctx.llm`: model-adapter registration and streaming calls;
-- `ctx.sessions`: the in-memory Session Store;
-- `ctx.tools`: tool registration and the execution pipeline;
-- `ctx.fs`: filesystem access;
-- `ctx.agentLoop`: the default Agent driver.
-
-A complete replaceable capability usually has three roles: a component defining the Service interface, a component providing an implementation, and a component consuming it. For the filesystem capability, `dsh-fs` defines `ctx.fs`; `dsh-fs-local`, `dsh-fs-sandbox`, and `dsh-fs-e2b` provide different implementations; filesystem tools depend only on `ctx.fs`, not on any concrete implementation.
-
-### Event: intervene in a flow without replacing its Service
-
-Services support direct capability calls; Events support observation and interception. DSH has several important event domains:
-
-- Session Events record durable facts;
-- `agent/*` Events coordinate a live Agent;
-- `tools/*`, `llm/*`, and `fs/*` Events expose policy and middleware points.
-
-A plugin need not replace the entire Agent Loop to rewrite messages in `agent/pre-step`, adjust request configuration in `agent/request`, or add authorization, deadlines, and auditing around `tools/execute`.
-
-## 4. What DSH Means by an Agent
-
-In DSH, an Agent is neither an LLM nor a static “prompt plus tools” configuration. The [`Agent` interface](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/core/agent/src/runtime-types.ts) is closer to a controller for one live conversation. It contains:
-
-- one `id` shared with its Session;
-- the current provider route and model options;
-- a `session` containing durable facts;
-- an `inbox` of pending input;
-- an `idle` or `running` status;
-- an Agent-specific `agent.ctx`;
-- control methods such as `followup()`, `steer()`, `inject()`, and `cancel()`.
-
-Three separations are central to this design.
-
-### Agent Registry and Agent Loop are separate
-
-`ctx.agents` owns the live Agent registry, creation, lookup, ownership, and lifecycle, but it does not run the model loop. `ctx.agentLoop` supplies creation and driving, with `dsh-agent-loop` as the default implementation. UI, ACP, SDK, and Subagent code can therefore depend on the stable Agent Service without importing the concrete Loop.
-
-DSH separates what an Agent is from how it runs:
-
-```text
-ctx.agents       = stable Agent management interface
-ctx.agentLoop    = the selected execution algorithm
-ReactLoopAgent   = Agent instance created by the default Loop
+```yaml
+- insert:
+    - id: mcp-docs
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: docs
+        transport: streamable-http
+        url: https://example.com/mcp
 ```
 
-### Session is fact; Agent is live control
+`id` is the instance's stable identity in the component tree, `name` is the component package to import, and `config` is passed to that instance. The MCP Client depends on `ctx.tools`. The Loader waits for `dsh-base` to provide the Tools Service before activating it; only then does it register the remote tools with `ctx.tools`.
 
-A Session is an append-only log of typed `SessionEvent`s. Model history is not maintained as a second mutable array; it is derived from the effective Surface of that log. Turns, Steps, streamed model output, tool calls, and tool results all become events.
-
-The repository enforces a crucial rule: **model-visible means logged**. Anything entering a model request must be reconstructable from the Session Log. Resume, Fork, Compaction, Telemetry, and UI replay can therefore share one source of truth instead of maintaining divergent state.
-
-The Agent is the process-local live object. It owns its Inbox, cancellation signals, current activity, and scoped Context. A restart can construct a new Agent from a persisted Session, but the old Agent object and its process-local resources are not serialized.
-
-### Turn and Step are the default Loop's units of execution
-
-The default Loop can be summarized as follows:
+An external component package typically has a small directory structure:
 
 ```text
-Input enters the Agent Inbox
-        ↓
-Open a Turn and claim next-turn / next-step input
-        ↓
-agent/pre-step may reject or rewrite the input
-        ↓
-Assemble the System Prompt and currently visible Tool Schemas
-        ↓
-Derive model history from the Session Log and call ctx.llm
-        ↓
-Append Stream Chunks and the final Assistant Message to the Session
-        ↓
-Execute Tool Calls through ctx.tools and record Tool Results
-        ↓
-If tools or steering require more work, open another Step; otherwise end the Turn
+my-dsh-component/
+├── package.json          # Package name, runtime entry point, and dependencies
+├── src/index.ts          # Component source
+└── lib/index.js          # Built entry point loaded by DSH
 ```
 
-A Turn may contain several Steps. One Step is one model request plus the tool executions it causes. The Agent Loop stays relatively small by delegating to `sessions`, `systemPrompt`, `llm`, and `tools`, with Events at each boundary.
+To add such a component to the Web Profile, install it first:
 
-## 5. The Major DSH Services by Layer
+```sh
+dsh plugin --profile web add <component-package>
+```
 
-The repository contains many Services, but the architecture becomes manageable when they are grouped into six layers:
+This only adds the package to `dependencies` and installs it into the Profile. If it is not a bundle, the CLI notes that it is currently a plain dependency. A separate `insert` entry in `cordis.patch.yml`, like the MCP example above, is still required to register an instance. In short: **installation solves module resolution; the patch puts the component into the tree.**
 
-| Layer | Major Services | Responsibility |
+#### Option two: add a group of components through a bundle
+
+A bundle is not a different kind of runtime component. It is an npm package containing “a prepared set of component-tree patches.” Bundles are useful when several cooperating components, default configurations, and overrides should be delivered together. A bundle declares this in its own `package.json`:
+
+```json
+{
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
+```
+
+That `cordis.patch.yml` may insert many component rows or override rows supplied by earlier bundles. The same command installs an external bundle:
+
+```sh
+dsh plugin --profile web add <bundle-package>
+```
+
+The difference is what happens next. After installation, the CLI detects the `dsh.bundle` declaration and automatically appends the package's real name to the Web Profile's `dsh.profile.bundles`. One operation therefore does two things: the package enters `dependencies`, and its patch becomes a configuration layer in the component tree. On later `dsh web` runs, that layer is applied after `dsh-web-app` and before the user's own `cordis.patch.yml`.
+
+### 1.4 What Does One Component Unit Look Like?
+
+The first form, and the most common in DSH, uses named exports to place metadata and the entrypoint in one module:
+
+```ts
+export const name = 'greeter-consumer'
+export const inject = ['greeter']
+export const Config = z.object({ who: z.string().required() })
+
+export function apply(ctx: Context, config: { who: string }) {
+  ctx.logger.info(ctx.greeter.greet(config.who))
+}
+```
+
+`name` identifies the component, `inject` declares its required Services, `Config` defines its configuration schema, and `apply(ctx, config)` is its executable entrypoint. Because this module has no default export, Loader treats the whole module as an object component with an `apply` function.
+
+This metadata is not exclusive to object components. The second form default-exports a function and can attach `inject` and `Config` to the function object with `Object.assign()`:
+
+```ts
+const greetingPrinter = Object.assign(
+  async function greetingPrinter(ctx: Context, config: { who: string }) {
+    ctx.logger.info(ctx.greeter.greet(config.who))
+  },
+  {
+    inject: ['greeter'],
+    Config: z.object({ who: z.string().required() }),
+  },
+)
+
+export default greetingPrinter
+```
+
+The function itself is the entrypoint, and its function name, `greetingPrinter`, becomes the default component name. Registry can also read `inject` and `Config` directly from this function object.
+
+The third form default-exports a class and declares metadata as static fields:
+
+```ts
+export default class Heartbeat {
+  static inject = ['timer']
+  static Config = z.object({ interval: z.number().min(100).required() })
+
+  constructor(ctx: Context, config: { interval: number }) {
+    ctx.interval(() => ctx.logger.info('tick'), config.interval)
+  }
+}
+```
+
+The class itself is the entrypoint, and its class name, `Heartbeat`, becomes the default component name. Registry reads `inject` and `Config` from the class's static properties, while Fiber creates the instance with `new Heartbeat(ctx, config)`. `name`, `inject`, and `Config` are all optional metadata: omitting `inject` means the component waits for no additional Services, while omitting `Config` means no schema processes its configuration. Whichever form is used, Loader must ultimately pass Registry a function, class, or object with an `apply` function.
+
+## 2. How Boot Builds a Runtime Context from a Profile
+
+Chapter 1 produces the final component rows, but they are still static descriptions. Boot turns them into running component instances. The key to that transition is `ctx`, the value passed to every component.
+
+### 2.1 What Is a Context (`ctx`)?
+
+At its core, `ctx` is Cordis's runtime container. It uses a `Proxy` as a single entry point for resolving Services, managing component registration, dispatching events, and recording Effects, so all of these capabilities are available through one object.
+
+`new Context()` first creates the Root Context. Whenever a component instance is registered, Cordis creates a Fiber for it and derives a child Context from the parent Context, bound to that Fiber. The child inherits the parent's core capabilities and gives the component access to Services in the current scope, while the corresponding Fiber owns the component's Effects.
+
+#### Core Members and Context Methods
+
+The Root Context stores the core members directly. A child Context inherits them through the prototype chain and may override its parent's `fiber`, `baseUrl`, or scope information.
+
+| Member | Meaning |
+| --- | --- |
+| `ctx.root` | Always points to the Root Context. Only the root itself satisfies `ctx.root === ctx`. |
+| `ctx.baseUrl` | The base for resolving relative modules and file paths. It starts as `undefined` on the Root Context, and a child inherits it by default. |
+| `ctx.fiber` | The Fiber that owns this Context. The Root Context has the Root Fiber with `uid` `0`; a component's child Context has that component instance's Fiber. |
+| `ctx.reflect` | The Service registration and resolution layer behind the `Proxy`. |
+| `ctx.registry` | The component registry. It stores component Runtimes and creates Fibers. |
+| `ctx.events` | The event bus. |
+| `ctx.logger` | The logging service. `ctx.logger('name')` creates a named Logger, while `ctx.logger.info()` logs directly. |
+| `ctx[Context.isolate]`, `ctx[Context.intercept]` | Two low-level, Symbol-keyed maps holding Service isolation scopes and intercept configuration. |
+
+All of these members appear in the `Context` type declarations. `Context` itself also defines three public methods:
+
+| Method | Meaning |
+| --- | --- |
+| `extend(meta)` | Create a child Context that inherits this Context and adds local information. |
+| `isolate(name, label?)` | Derive a child Context with an independent scope for the specified Service. |
+| `intercept(name, config)` | Derive a child Context that adds Service configuration affecting only its descendants. |
+
+#### Shortcut Property and Methods
+
+To avoid repeatedly writing `ctx.reflect.get()` or `ctx.registry.plugin()`, Cordis calls `mixin()` during initialization to map members of several core objects onto the top level of `ctx`. These shortcuts are not copied implementations: the `Proxy` forwards each access to the corresponding object for the current Context.
+
+| Core member | Shortcut mapped onto `ctx` |
+| --- | --- |
+| `ctx.reflect` | `get()`, `set()`, `provide()`, `accessor()`, `mixin()` |
+| `ctx.fiber` | `runtime`, `effect()` |
+| `ctx.registry` | `inject()`, `plugin()` |
+| `ctx.events` | `on()`, `once()`, `parallel()`, `emit()`, `serial()`, `bail()`, `waterfall()` |
+
+### 2.2 Registry: Turning Component Code into Fibers
+
+Registry is easiest to understand as two layers: a Runtime records “which component is this?”, while a Fiber represents “one running instance of this component.”
+
+The Registry created by `new Context()` initially has no records. Every call to `ctx.plugin(component, config)` performs three steps:
+
+1. It extracts the component entrypoint, internally called `callback`. A function or class component uses itself as `callback`; an object component uses its `apply` function.
+2. It uses the `callback` function reference as a key to look up a Runtime, creating one only when none exists. The Runtime stores the component name, entrypoint `callback`, configuration schema, and all Fibers belonging to that component.
+3. It creates a new Fiber for this call and stores the supplied `config` and lifecycle state in it.
+
+All Contexts share the same underlying Registry. Registry indexes Runtimes and Fibers by entrypoint:
+
+```text
+All Contexts ──→ the same Registry
+                 └── callback: Greeter
+                     └── Runtime
+                         ├── name / callback / Config schema
+                         └── fibers
+                             ├── Fiber A
+                             └── Fiber B
+```
+
+The key here is a function reference, not a component name, package name, or component-row `id`.
+
+`ctx.inject(deps, callback)` is a shortcut for temporarily mounting dependency-aware logic from component code. It does not create a component row with an `id`, package name, and configuration, nor does it write anything to `cordis.yml`. Internally, it creates the in-memory component definition `{ inject: deps, apply: callback, name: callback.name }` and passes that definition to `ctx.plugin()`. It therefore creates a child Fiber whose dependency changes and disposal are managed by Fiber in the usual way.
+
+Registry therefore answers: **has this component code been registered, and which Fiber should this registration create?**
+
+### 2.3 Fiber: Managing One Component Instance's Lifecycle
+
+In the source, a component Fiber has the following main fields:
+
+| Member | What it stores |
+| --- | --- |
+| `uid`, `name` | The instance number assigned by Registry and the display name derived from the Runtime or an ancestor; the Root Fiber has `uid` `0`, and a disposed Fiber has `null` |
+| `parent` | The Parent Context used to create this Fiber; its parent Fiber is available as `parent.fiber` |
+| `ctx` | The Context associated with the current Fiber |
+| `runtime` | The Runtime that owns this instance, including its component entrypoint and configuration schema; it is `null` for the Root Fiber |
+| `inject` | The component's declared Service dependency map |
+| `config` | The validated and processed component configuration used for the current activation |
+| `store` | Holds the Services bound for the current activation and becomes `undefined` after unloading |
+| `state` | The current lifecycle state |
+| `inertia` | The current loading or unloading task; it is `undefined` when the Fiber is stable |
+| `dispose` | Unloads and permanently removes this component instance |
+
+A Fiber moves through these states:
+
+```text
+PENDING (waiting for Services)
+    ↓
+LOADING (running component code)
+    ↓
+ACTIVE (component is running)
+    ↓
+UNLOADING (running cleanup)
+    ↓
+DISPOSED
+```
+
+The most important Fiber method is `effect()`, which components normally call through the `ctx.effect()` shortcut. This is Cordis's concrete implementation of **Revertible Effects**: whenever an operation changes external state, it supplies a cleanup function that reverses that change.
+
+```ts
+function apply(ctx: Context) {
+  ctx.effect(() => {
+    const timer = setInterval(work, 1000)
+    return () => clearInterval(timer)
+  }, 'work-timer')
+}
+```
+
+The function passed to `effect()` runs immediately, while the current Fiber saves the cleanup function it returns. The Fiber automatically runs that cleanup when the component unloads, restarts, or is removed; calling the value returned by `effect()` can also clean it up early. Registrations created by `ctx.provide()`, `ctx.on()`, and `ctx.plugin()` follow the same mechanism, so they are reverted with their owning Fiber.
+
+Fiber also provides lifecycle helpers: `getEffects()` inspects registered Effects, `await()` waits for loading or unloading to finish, `restart()` and `update()` reactivate a component, `dispose()` permanently removes an instance, and `assertActive()` verifies that the instance has not been disposed.
+
+Except for the Root Fiber, each component Fiber is constructed by `parentCtx.plugin(component, config)` together with its corresponding Context. If a component calls `ctx.plugin()` through its own Context, the new Fiber becomes its child. The component tree therefore becomes an in-memory runtime tree made of Fibers and Contexts:
+
+```text
+Root Fiber ── Root Context
+├── Fiber A ── Context A
+│   └── Fiber C ── Context C
+└── Fiber B ── Context B
+```
+
+The child Fiber constructor attaches its teardown to the parent Fiber in the following way. In simplified form, the code is:
+
+```ts
+childFiber.dispose = parentFiber.effect(() => {
+  return async () => {
+    // Remove childFiber from its Runtime and unload it
+  }
+}, 'ctx.plugin()')
+```
+
+`parentFiber.effect()` creates a `dispose` wrapper. The parent Fiber stores it in its `_disposables` cleanup list, while the child Fiber stores the same function as `childFiber.dispose`.
+
+The same teardown can therefore start in two ways: by calling `childFiber.dispose()` directly, or by unloading the parent Fiber. When the parent unloads, it runs the wrappers in its cleanup list and thereby unloads the child. The child's cleanup list contains the wrappers for its own children, so the process recursively unloads the entire subtree.
+
+Fiber therefore answers: **when should this component instance run, what does it depend on, and what must be cleaned up when it unloads?**
+
+### 2.4 Reflect: How Components Provide and Depend on Services
+
+In Cordis, one component cannot directly depend on another component or on its Fiber. `ctx.plugin()` only registers the component with Registry and creates a Fiber. The component must also call `ctx.provide()` while its entrypoint runs to expose a capability as a Service. Another component's `inject` declaration depends on that Service name.
+
+A component tree has only one underlying Reflect. After the Root Context creates it, every child Context continues to use its `props` and `store`:
+
+```text
+Root Context ─────┐
+Child Context A ──┼──→ the same Reflect
+Child Context B ──┘     ├── props
+                        └── store
+```
+
+The two tables serve different purposes:
+
+| Record | What it stores | Key | Service-scope aware? |
+| --- | --- | --- | --- |
+| `props` | Property resolution rules, such as Service or accessor | Property name, such as `greeter` | No; one property definition is shared by the whole tree |
+| `store` | Actual Service implementations (`Impl`), including the `value` and owning Fiber | A Symbol | Yes; the same Service name can have different implementations in different scopes |
+
+`props.greeter = { type: 'service' }` only tells the Proxy: “Treat `ctx.greeter` as a Service property.” Finding the object to return still requires a lookup in `store`.
+
+#### Service Isolation: Using Different Implementations of the Same Service
+
+Service implementations are stored in `reflect.store`, but its key is not the Service name. The key is a Symbol recorded in `ctx[Context.isolate]`:
+
+```text
+ctx[Context.isolate].greeter → Symbol A
+reflect.store[Symbol A]      → greeter implementation
+```
+
+This extra mapping allows different Contexts to use different implementations of a Service with the same name. An ordinary child Context inherits its Parent Context's mapping, so both use the same Symbol to look up `greeter` and therefore find the same implementation.
+
+When a child is derived through `isolate()`, Cordis creates a new mapping layer for it and changes the Symbol only for the specified Service:
+
+```ts
+const child = ctx.isolate('greeter')
+```
+
+```text
+Parent Context: greeter → Symbol A
+Child Context:  greeter → Symbol C
+```
+
+The Parent Context is not modified, and every other Service still inherits its Symbol from the Parent Context. Components below the Parent Context now look up `greeter` through `Symbol A`, while components below the Child Context use `Symbol C`; each side can therefore register and use its own `greeter` implementation. `isolate()` only changes the Symbol used for lookup and does not register a Service by itself.
+
+#### How `provide` Registers a Service in Detail
+
+The following `greeterComponent` is an ordinary component that exposes a Service named `greeter` from its entrypoint:
+
+```ts
+const greeterComponent = {
+  name: 'greeter-component',
+  apply(ctx: Context) {
+    const greeterService = {
+      greet: (who: string) => `Hello, ${who}!`,
+    }
+    ctx.provide('greeter', greeterService)
+  },
+}
+```
+
+Here, `ctx` is the dedicated Context derived from the Parent Context when the Fiber for `greeterComponent` is created, and `greeterService` is the concrete object being provided. `ctx.provide()` is a shortcut for `ctx.reflect.provide()`. Internally, it performs these operations in order:
+
+1. Mark `greeter` as a Service in `props`.
+2. Ensure that the Root Context has a default Symbol for `greeter`.
+3. Read the Symbol actually used for `greeter` from the current Context's address table. If that Context has isolated `greeter`, this is the isolated Symbol.
+4. Create an `Impl` containing the Service name, concrete object, and owning Fiber.
+5. Wrap the registration in an Effect owned by the current Fiber so that unloading the Fiber automatically removes the Service.
+
+The resulting structure is:
+
+```text
+ctx.reflect.props.greeter = { type: "service" }
+
+Impl
+├── name: "greeter"
+├── value: greeterService
+└── fiber: Fiber for greeterComponent
+
+Current Context's address table
+└── greeter ──→ Symbol A
+
+The same Impl can be referenced from multiple places
+├── ctx.reflect.store[Symbol A] ──→ Impl
+├── Fiber.store.greeter for greeterComponent ──→ Impl
+└── Fiber.store.greeter for each Consumer that resolves this implementation ──→ Impl
+```
+
+When `provide()` runs, it first places the `Impl` in `reflect.store` and in the provider's own `Fiber.store`. When a Consumer resolves its `inject` declaration, it obtains the same `Impl` from `reflect.store` and places it in its own `Fiber.store` during activation. The provider and Consumers can therefore access the same `Impl.value` through their respective `ctx.greeter` properties. Service lifetime ownership is recorded by `Impl.fiber`.
+
+If `greeterComponent` creates a Fiber but never calls `provide()`, `greeter` does not appear in Reflect and Fibers that depend on it remain `PENDING`. `greeterComponent` can still listen for events or start a timer, but other components cannot depend on it through `inject`. When the Fiber for `greeterComponent` unloads, the Effect created by `provide()` automatically removes the Service and returns dependent Fibers to the waiting state.
+
+#### Reflect's Other Shortcuts
+
+In addition to `provide()`, Reflect exposes four related methods:
+
+| Shortcut | Capability | Underlying mechanism |
 | --- | --- | --- |
-| Agent spine | `sessions`, `agents`, `agentLoop`, `systemPrompt`, `tools`, `llm` | Store facts, drive Turns and Steps, assemble requests, and invoke models and tools. |
-| Execution environment | `fs`, `subprocess`, `shell`, `terminals`, `sandbox`, `sandboxPolicy`, `lsp`, `codeRuntime` | Turn model actions into local, confined, or remote execution. |
-| Agent capabilities | `skills`, `web`, `subagents`, `workflowEngine`, `jobs`, `compaction`, `goals`, `planMode` | Add retrieval, delegation, workflows, long-running work, and context management around the core loop. |
-| Data and recovery | `sessionPersistence`, `sessionQuery`, `sessionProjections`, `attachments`, `spillStore`, `storage` | Persist and query logs, build projections, and store large objects. |
-| Configuration and collaboration | `settings`, `credentials`, `approval`, `permissionPresets`, `commands`, `userQuestions` | Manage configuration, secrets, authorization, commands, and human decisions. |
-| Delivery surfaces | `typert`, `typertGateway`, `apiProxy`, `webServer`, `clientModules`, and browser `slots` | Project Host capabilities into SDK, API, and Web UI surfaces. |
+| `ctx.get(name)` | Probe an optional Service | Looks in `store` using the current Context's isolation scope and returns only an active implementation by default |
+| `ctx.set(name, value)` | Update a Service implementation value | Finds the record in the current scope; only the Fiber that provided the Service may change it |
+| `ctx.accessor(name, hooks)` | Add a property that is evaluated when read | Reading `ctx[name]` calls the supplied `get`; writing it calls the optional `set` |
+| `ctx.mixin(source, keys)` | Expose Service methods directly on `ctx` as shortcuts | For example, `ctx.mixin('timer', ['setTimeout'])` forwards `ctx.setTimeout()` to `ctx.timer.setTimeout()` |
 
-The central dependency chain is:
+The difference is that `accessor()` lets a component define the read and write behavior of one property, while `mixin()` internally creates such accessors for multiple members at once. Both only register access rules in `props`; neither registers a Service in `reflect.store`.
 
-```text
-Agent Loop
-├── sessions: read and append durable facts
-├── systemPrompt: collect Prompt Sections and Tool Schemas
-├── llm: select a model adapter and produce a stream
-└── tools: resolve tools and run the guarded execution pipeline
-      ├── fs / shell / web / subagents / workflow ...
-      └── approval / sandbox / timeout / spill policies
-```
+`provide()` and these four methods are not copied onto the Context object. During initialization, Reflect calls `mixin('reflect', ...)` to create accessors for them in `props`. When code reads `ctx.get`, the outer Proxy forwards the call to `ctx.reflect.get` for the current Context. Shortcuts such as `runtime`, `plugin`, and `on` use the same mechanism and forward to Fiber, Registry, and Events respectively. After initialization, `props` contains 16 shortcuts while `store` is still empty; later calls to `provide()` or `accessor()` add more records to `props`.
 
-This reveals DSH's central view of an Agent: the Agent itself is a small runtime controller. Most capabilities live in the Services it depends on and the Event extension points around them.
+Reflect therefore answers: **which Service implementation is available in the current scope, how can code access it through `ctx`, and when should a Fiber that depends on it run?**
 
-## 6. Which Services Can Be Overridden, and How?
+### 2.5 Events: How Components Emit and Listen for Events
 
-“Replaceable” has at least four different meanings in DSH.
-
-### 6.1 Replace a single-instance Service implementation
-
-Within one Context realm, a Service name can have only one implementation. A second component providing the same name fails instead of silently overriding it. To replace `ctx.fs`, `ctx.shell`, or `ctx.sessionPersistence`, a composition disables or replaces the original row and mounts a compatible implementation.
-
-Typical replaceable capabilities include:
-
-- Session Persistence: JSONL or SQLite;
-- Filesystem: Local, Sandbox, or E2B;
-- Subprocess: Local or E2B;
-- Shell: local Bash, sandboxed Bash, or PowerShell;
-- Sandbox, Code Runtime, Compaction, Workflow Engine, and Spill Store;
-- the Agent Loop itself.
-
-Compatibility matters: the new component must preserve the same Service interface and lifecycle semantics. Otherwise dependencies may activate successfully while runtime behavior is still incorrect.
-
-### 6.2 Keep a registry Service and add or replace entries within it
-
-Some Services are registries. The usual extension is not replacing the registry object, but registering entries in it:
-
-- `ctx.llm` registers model adapters by provider route;
-- `ctx.tools` registers Tool Definitions by tool name;
-- `ctx.systemPrompt` registers Sections, Variables, and Context providers by name;
-- `ctx.web` registers Search and Fetch implementations by id;
-- `ctx.skills` registers Skill sources;
-- `ctx.subagents` registers Subagent implementations.
-
-Duplicate names at one layer generally fail. A registration in an Agent Scope can instead shadow a global entry for that Agent. One Agent can therefore have its own Persona, tool version, or restrictions without changing any other Agent.
-
-### 6.3 Use `isolate` to create a private Service realm
-
-Cordis `isolate` allows the same Service name to resolve to different implementations in different realms. DSH Agent Presets use this for Services genuinely owned by one composition.
-
-For example, the [`minimal` preset](https://github.com/deepseek-ai/deepseek-harness/blob/main/apps/cli/config/agent-presets/minimal/agent.cordis.yml) provides `terminals` in its own realm and shadows the Host's sandboxed `fs` with a local filesystem. Other Agents continue using the Host implementations.
-
-Not every Service belongs in an Agent realm. The Session Store, persistence, Sandbox Policy, model route, and Subagent Registry are shared by the Host or across Sessions and must stay in the Host Plane. A preset component that provides a Service must place it in an explicit `isolate` realm unless the Service belongs on the Host; otherwise it leaks into the process-level realm and conflicts with other Presets.
-
-### 6.4 Keep the Service and rewrite one decision through Events
-
-Many extensions require no Service replacement:
-
-- model-request retry can wrap `llm/stream`;
-- Compaction can intercept `agent/pre-step`;
-- Tool Timeout can wrap the tool execution pipeline;
-- permission and filesystem-observation policies can listen to capability events;
-- the Goal Driver can steer at the Turn stopping boundary.
-
-This form preserves the core Service and replaces one decision, making it easier to compose with other plugins.
-
-## 7. Host Plane, Agent Plane, and Client Plane
-
-DSH does not have one flat plugin tree. It has three important composition spaces.
-
-### Host Plane: infrastructure shared by the process
-
-The Host Plane contains Services shared across Sessions or read by entry points: the Session Store, persistence, LLM Registry, Tool Registry, Sandbox, Approval, Settings, Credentials, Subagent Registry, and API Gateway.
-
-### Agent Plane: the capability view of one Agent
-
-In Web mode, an Agent Preset determines an Agent's Persona, tools, Prompt Sections, Compaction, Workflow, and other capabilities. The standard Preset is mounted once, and Agents join it through a scope parent chain:
+A component tree shares one Events instance. Its listener table uses the event name as the key and an array of listeners as the value:
 
 ```text
-The Agent's own Scope
-        ↓
-The selected Preset Scope
-        ↓
-The Host's global Scope
+Events
+└── "greeter/used"
+    ├── { ctx: Context A, callback: listenerA }
+    └── { ctx: Context B, callback: listenerB }
 ```
 
-The nearest registration wins, so an Agent may shadow its Preset, and a Preset may shadow the global layer. Mutable state remains separated by using the Session or Agent as a key inside shared plugin instances.
+When code calls `ctx.on('greeter/used', callback)`, Cordis appends a record containing the callback and the current Context to the corresponding array. The Context is retained so scoped dispatch can filter listeners. The registration is also owned by the current Fiber, so it is removed automatically when the component unloads. The function returned by `ctx.on()` can remove it earlier.
 
-Presets do not switch arbitrarily during a running conversation. DSH only allows a content-free Agent to change Preset. Once the Session contains model requests or tool calls, a different tool and prompt composition would make recorded history inconsistent with current capabilities. An Agent also keeps the Preset generation it joined; file changes affect Agents created later.
+When code calls `ctx.emit('greeter/used', 'DSH')`, Events looks up the array under the same name, filters it for the target scope, and passes `'DSH'` to each remaining callback. Emitting an event with no listeners has no effect.
 
-### Client Plane: another Cordis runtime in the browser
+```ts
+ctx.on('greeter/used', (who) => {
+  ctx.logger.info(`greeted ${who}`)
+})
 
-The Web UI is plugin-based too, but it runs in its own browser-side Cordis Context. The Host supplies the API and module manifest, while Client plugins register UI into sidebar, conversation, composer, and Tool Card slots. A Host Service does not automatically appear in the Client just because it has the same name; it must be explicitly projected through Typert and the API Gateway.
+ctx.emit('greeter/used', 'DSH')
+```
 
-“Everything is a plugin” therefore does not mean every plugin shares one global container. Visibility is constrained by process, realm, Agent scope, and the Host/Client boundary.
+The dispatch method determines how listeners run:
 
-## 8. The Real Boundary of “Everything Is a Plugin”
+| Method | Execution |
+| --- | --- |
+| `emit()` | Call every listener synchronously without awaiting Promises. |
+| `parallel()` | Run every listener concurrently and wait for completion. |
+| `serial()` | Await listeners in order and stop on the first effective result. |
+| `bail()` | The synchronous counterpart of `serial()`. |
+| `waterfall()` | Listeners wrap the remaining chain through `next()` and may stop it by not calling `next()`. |
 
-DSH is deeply plugin-based: model adapters, the Agent Loop, Session Store, tools, persistence, Sandbox policy, APIs, and UI all appear in composition. But this does not mean everything can be hot-swapped without conditions.
+### 2.6 How Boot Builds and Updates the Component Tree
 
-### Cordis itself is not a plugin
+`runProfile()` first reads the Profile `package.json` and collects bundle patches, the Profile patch, the global user patch, and command-line overlays in order. `boot()` then creates the Root Context, at which point startup enters Cordis.
 
-Context, Fiber, Effect tracking, Service resolution, the Loader, and the JavaScript process hosting them are the substrate. “Everything” refers to DSH product capabilities, not to the composition runtime itself.
+#### Default Behavior after Creating the Root Context
 
-### Interfaces and persistence semantics cannot be broken casually
+1. `new Context()` creates the Root Fiber and the four core capabilities `reflect`, `registry`, `events`, and `logger`.
+2. `boot()` sets `baseUrl`, which anchors component-package resolution, and then calls `ctx.provide('dshHomePath', dshHomePath)` to register the path-building function `dshHomePath` as the first Service on the Root Context. For example, `dshHomePath('sessions')` returns the absolute path to `$DSH_HOME/sessions`, and Loader can also use it while evaluating `!!js` expressions in configuration.
+3. DSH passes the statically imported Loader to `ctx.plugin()` as the first component. The Loader cannot rely on a component tree that does not yet exist to load itself, so Boot must start it directly. Registry now creates its first Runtime and corresponding Fiber; once active, the Loader provides the `ctx.loader` Service.
 
-Implementations can be replaced, but Agent, SessionEvent, Tool, and LLM Stream contracts are the shared language between components. A replacement Agent Loop must still honor Agent creation, cancellation, ownership, and logging rules. A replacement persistence backend must still preserve append-only ordering, contiguous sequence numbers, and crash repair.
+#### How the Loader Loads the Complete Component Tree
 
-### Only registered Effects are automatically reversible
-
-`ctx.effect()`, `ctx.on()`, and registration methods returning disposers unwind with a Fiber. If a component bypasses these mechanisms to mutate globals, start an untracked task, or change an external system, Cordis cannot restore the previous state. Database writes, sent email, and payment requests are outside Context rollback entirely.
-
-### Plugin composition is not a security boundary
-
-A Preset is executable composition and has trust comparable to shell access. DSH's Cordis authoring mode lets an Agent inspect the runtime and temporarily `define/run/stop` dynamic components, but those components live only in process memory, are not automatically persisted, and run in a VM that is containment for cooperative code rather than a security boundary.
-
-### Runtime capability is not the same as enabling everything by default
-
-Cordis supports configuration reconciliation and HMR, but the current Web and Headless Bundles disable general HMR by default. DSH takes a more controlled path: new Sessions use a new Preset generation, or an explicitly authorized Cordis session runs temporary components. “The runtime can replace components” should not be read as “every production Agent immediately recomposes whenever a file changes.”
-
-### Some behavior still belongs to the default Loop algorithm
-
-Plugins can change a great deal through Services and Events, but the Turn/Step state machine, logging boundaries, and tool scheduler still belong to the default `agent-loop`. Changing those foundational semantics means replacing the Loop while continuing to honor its external contracts, not patching arbitrary internals.
-
-A more precise statement is:
-
-> DSH makes product capabilities plugins with explicit contracts and lifecycles wherever possible, but those plugins still operate within boundaries defined by Cordis, the process, durable formats, the trust model, and cross-surface protocols.
-
-## 9. Putting the Architecture Together
-
-From boot to one model request, the complete DSH path can be compressed into this sequence:
+On every startup, DSH writes the Profile's `cordis.yml` as an empty array, `[]`. The file only anchors the Profile directory and module-resolution location; the actual component rows come from the layered `cordis.patch.yml` files:
 
 ```text
-Profile + Bundles + Patches
+empty cordis.yml
+        +
+bundle patches → Profile patch → $DSH_HOME/cordis.patch.yml → --patch and other overlays
         ↓
-Loader builds the Host Component / Fiber Tree
+Include composes the final component rows
         ↓
-Service dependencies determine when components activate
+Loader creates an Entry and entry.ctx for each row
         ↓
-An entry point creates an Agent and Session through ctx.agents
+Import the component package named by name
         ↓
-The Agent Scope joins a Preset and receives its own tool and prompt view
+entry.ctx.registry.plugin(component, config)
         ↓
-The Agent Loop opens Turns and Steps from the Inbox
-        ↓
-Session + SystemPrompt + LLM + Tools cooperate to execute the request
-        ↓
-Every model-visible fact is appended to the Session Log
-        ↓
-UI / SDK / Persistence / Telemetry read the same facts through Events and projections
+Create a Fiber; activate it after its inject requirements are met
 ```
 
-Cordis owns the vertical lifecycle: when components exist, when dependencies are satisfied, and how their effects unwind. DSH owns the horizontal product semantics: what an Agent is, how a Turn runs, which facts are durable, how tools and models connect, and which capabilities each Session can see.
+Once the Loader is ready, Boot registers `cordis:include` and `cordis:group` as built-in components, then creates a root component row with the fixed `id` `include`. Include reads `cordis.yml`, applies every patch in order, and hands the final component rows to the Loader's Entry Tree.
 
-Together, these layers make “everything is a plugin” an executable architecture principle rather than a statement about directory layout. The default product is itself a composition, and extensions use the same mechanism that boots the system in the first place.
+The resulting Context hierarchy is approximately:
+
+```text
+Root Context
+└── Loader Context
+    └── Include Context
+        ├── Context for component row A
+        ├── Context for component row B
+        └── Group Context
+            ├── Context for child row C
+            └── Context for child row D
+```
+
+#### How `cordis.patch.yml` Triggers Runtime Updates
+
+After initial startup succeeds, `runProfile()` ensures that the `timer` and `hmr` Services are available, then uses HMR to watch both:
+
+- `$DSH_HOME/profiles/web/cordis.patch.yml`
+- `$DSH_HOME/cordis.patch.yml`
+
+HMR watches for each file to be created, changed, or removed. When either changes, DSH rereads both user patch files, recomposes them with the original bundle patches and launch overlays, and passes the new complete patch list to the root Include:
+
+```text
+patch file changes
+        ↓
+reread both user patches
+        ↓
+recompose every patch layer
+        ↓
+update the root Include
+        ↓
+Loader compares the old and new Entry Trees by id
+        ↓
+create, update, replace, or remove the corresponding Fiber
+```
+
+| Component-row change | Loader action |
+| --- | --- |
+| Add a new `id` | Import the component and create a new Fiber. |
+| Remove a row or set `disabled` | Dispose its Fiber and revert the Effects it owns. |
+| Keep the same `id` but change `config` | Update the existing Fiber's configuration and reactivate the component. |
+| Change `name`, `inject`, or grouping | Dispose the old Fiber and create one from the new definition. |
+
+The update is transactional. If applying the new tree fails, the Loader attempts to restore the last successful tree, while HMR logs the error and emits `hmr/config-update-failed`. When a Service provider is replaced, dependent Fibers wait after the old implementation disappears and reactivate after the new one becomes available.
+
+Editing either watched user `cordis.patch.yml` therefore does not require restarting DSH. The Profile `package.json`, bundle list, bundle-owned patches, and component package code are outside this configuration watch path and still require a restart.
+
+## References
+
+- [DeepSeek Harness source code](https://github.com/deepseek-ai/deepseek-harness)

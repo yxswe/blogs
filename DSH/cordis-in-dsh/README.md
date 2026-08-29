@@ -1,346 +1,581 @@
 ---
-title: "DSH 如何基于 Cordis 构建"
-description: 从 Cordis 的动态组合模型出发，沿着启动、Agent Loop、Session、Service 与 Agent Preset 理清 DeepSeek Harness 的整体架构及插件化边界。
+title: "DSH 如何基于 Cordis 构建组件化运行时"
+description: 以 Web Profile 为例，讲清 DSH 如何通过 bundle 与 patch 组合组件树，以及 Boot 如何借助 Context、Registry、Fiber、Reflect 和 Loader 构建并动态更新运行时。
 lang: zh
 translationKey: dsh-cordis-architecture
 date: 2026-08-24
 tags:
-  - Agent Harness
-  - DeepSeek
+  - DeepSeek Harness
+  - Cordis
 featured: false
 ---
 
-# DSH 如何基于 Cordis 构建
+## 1. DSH 的真正入口：Profile 如何构建组件树
 
-上一篇文章从论文出发解释了 Cordis 的 Revertible Effects、Reactive Coeffects、Context 与 Fiber。这一篇换一个视角：不再单独研究 Cordis，而是沿着 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的实际代码回答五个问题：
+传统应用通常在一个固定的 `main()` 中依次创建数据库、模型客户端、工具和 Web Server。DSH 的命令行入口只做更少、也更关键的一件事：找到用户选择的 **Profile**，把它声明的配置层合并成一棵 Cordis 组件树，再交给 Loader 启动。
 
-1. Cordis 在 DSH 中到底处于哪一层？
-2. DSH 如何理解 Agent？
-3. 整个系统被划分成了哪些重要 Service？
-4. 哪些能力可以替换，替换是如何发生的？
-5. “Everything is a plugin” 的边界在哪里？
+以自带的 Web 版本为例，下面两条命令是同一个意思：
 
-先给出一句话结论：
-
-> Cordis 没有定义 Agent；它提供了组织动态系统的运行时规则。DSH 在其上定义 Agent、Session、LLM、Tools 等领域接口，再用插件提供默认实现，最终由配置把这些实现组合成一个可运行的 Harness。
-
-## 1. 先回顾 Cordis 论文：它提供的是组合规则
-
-Cordis 论文 [*A Programming Paradigm for Spatiotemporal Composability*](https://github.com/cordiverse/paper/blob/main/paper.pdf) 研究的不是 Agent，而是一个更基础的问题：当组件能在运行时加入、退出或替换时，系统怎样继续保持一致？
-
-论文把问题拆成两个维度：
-
-| 问题 | Cordis 的回答 |
-| --- | --- |
-| 一个组件退出后，如何撤销它注册的监听器、Service、后台任务等影响？ | Revertible Effects：组件产生影响时同时登记清理操作，由运行时在卸载时逆序执行。 |
-| 一个组件依赖的 Service 出现、消失或换成另一份实现后，它该如何响应？ | Reactive Coeffects：组件声明依赖，运行时在 Service 变化后重新判断依赖是否满足，并驱动组件激活、卸载或重载。 |
-
-这两个机制在 `Context` 中汇合：组件从 Context 读取 Service，也通过 Effect 修改 Context。一个组件的每次运行实例是 `Fiber`，Fiber 保存依赖快照、运行状态和清理操作。Loader 再把声明式配置变成 Fiber 树，并负责配置协调与模块热替换。
-
-因此 Cordis 是一个 meta-framework：它不规定系统必须有模型、工具或 Session，只提供下面这套通用语法：
-
-```text
-组件声明需要哪些 Service
-          ↓
-依赖满足后，Cordis 激活组件 Fiber
-          ↓
-组件提供 Service、注册监听器或产生其他 Effect
-          ↓
-Service 变化触发依赖组件重新计算生命周期
-          ↓
-组件退出时，Cordis 撤销 Fiber 记录的 Effect
+```sh
+dsh web
+dsh --profile web
 ```
 
-DSH 做的事情，是把 Agent Harness 的产品概念放进这套语法。
-
-## 2. DSH 的整体结构：配置先于代码入口
-
-传统应用通常有一个固定的 `main()`，由它按顺序创建数据库、模型客户端、工具和 Web Server。DSH 的启动方式不同：入口先解析一个 Profile，再把多层配置合成为一棵 Cordis 组件树。
-
-默认组合大致如下：
+第一次运行时，DSH 会自动初始化 `$DSH_HOME/profiles/web`。实际目录一开始很小：
 
 ```text
-Profile
-├── dsh-base：Session、Agent、LLM、Tools、持久化、Sandbox 等共享能力
-├── dsh-web-app 或 dsh-headless：Web 界面或一次性任务入口
-├── 当前 Profile 的 cordis.patch.yml
-├── Harness Home 的全局 patch
-└── 命令行 --patch
-          ↓
-最终的 Cordis 配置树
-          ↓
-Loader 导入组件并创建 Fiber
-          ↓
-依赖满足的组件自动激活
+$DSH_HOME/profiles/web/
+├── package.json          # Profile 清单：依赖与有序的 bundle 列表
+├── cordis.patch.yml      # 这个 Profile 自己的组件树补丁
+├── pnpm-workspace.yaml   # 外部组件的 pnpm 安装规则
+└── cordis.yml            # 启动时生成的空根节点，不要手工编辑
 ```
 
-后应用的 patch 可以按稳定的行 `id` 替换前面的配置、禁用一行或插入新组件。行在文件中的先后顺序不是启动顺序；真正的启动顺序由组件声明的 Service 依赖决定。这正是 Reactive Coeffects 在 DSH 启动阶段的直接用途。
+### 1.1 `package.json`：决定“有哪些代码可用”和“加载哪些 bundle”
 
-[`dsh-base` 的默认配置](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/bundle/base/cordis.patch.yml) 不是少量“扩展插件”，而是整个产品的默认实现：Agent、Loop、模型适配器、Session 持久化、工具、权限、Sandbox、Skill、Subagent、Compaction 和 Web Search 都是普通配置行。[Web Bundle](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/bundle/web-app/cordis.patch.yml) 再添加 Host API、HTTP Server 和浏览器插件，同时把适合单个 Agent 的工具移入 Agent Preset。
+要读懂这份文件，先区分普通组件与 bundle：
 
-所以理解 DSH 的第一步不是寻找唯一的主函数，而是查看最终组合：
+- **普通组件**是组件树中的一个可运行单元，通常以独立的 npm 包交付。
+- **Bundle** 是多个组件的组合包，通过**组合包自身的** `cordis.patch.yml` 描述这组组件如何加入组件树，`@deepseek-ai/dsh-web-app` 就是一个例子。Bundle 本身不是运行时组件，最终运行的仍是它贡献的各个组件行。
+
+在 Profile 层，`dependencies` 记录安装的外部包，`dsh.profile.bundles` 则按顺序列出要应用的 bundle。自带 Web Profile 的初始清单如下：
+
+```json
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}
+```
+
+这两个 bundle 随 DSH 发布，因此 `dependencies` 初始为空。DSH 先应用 `dsh-base`，提供 Agent、Session、LLM、Tools、持久化与 Sandbox 等共享能力；再应用 `dsh-web-app`，加入 Host API、HTTP Server 和浏览器端组件。后面的 bundle 可以使用相同的行 `id` 覆盖前面的配置。
+
+以 `dsh-web-app` 为例，一个 bundle 的核心目录结构如下：
+
+```text
+packages/bundle/web-app/
+├── package.json          # 声明 dsh.bundle.patch 和组件依赖
+├── cordis.patch.yml      # bundle 自身的组件树 patch
+└── src/                  # bundle 自带的组件源码
+```
+
+`package.json` 中的 `dsh.bundle.patch` 指向同包内的 `cordis.patch.yml`。这个文件定义 bundle 默认带来的组件，与用户用于添加或覆盖内容的 `$DSH_HOME/profiles/web/cordis.patch.yml` 不是同一个文件。
+
+### 1.2 `cordis.patch.yml`：组合 `cordis.yml` 下的组件树
+
+`cordis.yml` 是一个空根节点，`cordis.patch.yml` 则描述要挂在这个根节点下的组件子树。Web Profile 会依次应用这些 patch：
+
+```text
+dsh-base 的 cordis.patch.yml
+          ↓
+dsh-web-app 的 cordis.patch.yml
+          ↓
+$DSH_HOME/profiles/web/cordis.patch.yml
+          ↓
+$DSH_HOME/cordis.patch.yml
+          ↓
+命令行中的 --patch（如果有）
+          ↓
+cordis.yml 下的最终组件树
+```
+
+每个 patch 都可以插入新组件行，也可以用相同的 `id` 修改或禁用已有行。越靠后的 patch 优先级越高，因此 `dsh-web-app` 可以覆盖 `dsh-base`，Profile patch 又可以覆盖所有 bundle。覆盖 `config` 时会替换整块配置，而不是深度合并字段。
+
+可以在不启动 Web 服务的情况下查看最终结果：
 
 ```sh
 dsh --profile web --dump-config
 ```
 
-它展示的才是当前机器真正运行的系统。
+### 1.3 引入组件的两种方式
 
-## 3. Component、Service 与 Event 分别是什么
+一个组件真正运行要经过三个阶段：
 
-这三个概念容易混在一起，但它们承担不同职责。
+| 阶段 | 含义 |
+| --- | --- |
+| 安装 | 组件包已经可被解析。外部包会进入 Profile `package.json` 的 `dependencies`；内置包则随 DSH 提供。 |
+| 注册 | 某个 patch 让组件成为最终组件树中的一行。Patch 只负责决定“树里有没有它”。 |
+| 激活 | Loader 导入组件并创建 Fiber；Cordis 等它依赖的 Service 就绪后再激活 Fiber。 |
 
-### Component：一段有生命周期的实现
+因此，已经安装但没有注册的组件不会运行；已经注册但依赖尚未满足的组件也只会等待。
 
-一个 Cordis 插件就是一个 Component。它可以是一段函数、一个带 `apply(ctx)` 的对象，或者一个继承 `Service` 的类。Loader 中的一行配置会挂载一个 Component，并产生一个 Fiber。
+#### 方式一：直接引入一个组件
 
-Component 可以提供 Service，也可以只注册工具、Prompt Section 或 Event Listener，因此 Component 和 Service 不是一一对应关系。
+单个组件对应组件树中的一个实例。以 DSH 自带但默认不激活的 MCP Client 为例，它已经能从 DSH 安装中解析，因此不需要先执行安装命令。要连接一个 MCP Server，只需编辑 `$DSH_HOME/profiles/web/cordis.patch.yml`：
 
-### Service：组件之间使用能力的稳定名字
-
-Service 是 Context 中以 `ctx.<key>` 暴露的能力。例如：
-
-- `ctx.llm`：模型适配器注册与流式调用；
-- `ctx.sessions`：内存中的 Session Store；
-- `ctx.tools`：工具注册与执行管线；
-- `ctx.fs`：文件系统能力；
-- `ctx.agentLoop`：默认 Agent 驱动器。
-
-一个完整的可替换能力通常包含三种角色：定义 Service 接口的组件、提供具体实现的组件、使用这个 Service 的组件。例如文件系统能力中，`dsh-fs` 定义 `ctx.fs`，`dsh-fs-local`、`dsh-fs-sandbox` 或 `dsh-fs-e2b` 提供不同实现，而文件工具只依赖 `ctx.fs`，不直接依赖某个具体实现。
-
-### Event：不替换 Service 也能介入流程
-
-Service 适合直接调用能力，Event 适合观察或拦截流程。DSH 的关键路径提供了多种事件：
-
-- Session Event 记录必须持久化的事实；
-- `agent/*` Event 处理正在运行的 Agent；
-- `tools/*`、`llm/*`、`fs/*` Event 为策略和中间件提供扩展点。
-
-例如一个插件不必替换整个 Agent Loop，就可以在 `agent/pre-step` 中修改即将进入模型的消息，在 `agent/request` 中调整请求配置，或者在 `tools/execute` 中加入权限、超时和审计策略。
-
-## 4. DSH 如何理解 Agent
-
-DSH 中的 Agent 不是 LLM，也不是“Prompt + Tools”的静态配置。代码中的 [`Agent` 接口](https://github.com/deepseek-ai/deepseek-harness/blob/main/packages/core/agent/src/runtime-types.ts) 更接近一个正在运行的会话控制器，它包含：
-
-- 与 Session 共用的唯一 `id`；
-- 当前模型路由和模型选项；
-- 一个持有持久事实的 `session`；
-- 一个保存待处理输入的 `inbox`；
-- `idle` 或 `running` 状态；
-- 只属于这个 Agent 的 `agent.ctx`；
-- `followup()`、`steer()`、`inject()`、`cancel()` 等控制方法。
-
-这里有三个关键拆分。
-
-### Agent Registry 与 Agent Loop 是分开的
-
-`ctx.agents` 管理当前进程中的 Agent，负责创建、查找、所有权与生命周期，但不执行模型循环。具体创建和驱动由 `ctx.agentLoop` 提供，默认实现是 `dsh-agent-loop`。因此 UI、ACP、SDK 和 Subagent 只依赖稳定的 Agent Service，不需要直接依赖默认 Loop。
-
-换句话说，DSH 把“Agent 是什么”与“Agent 如何运行”分开了：
-
-```text
-ctx.agents       = 稳定的 Agent 管理接口
-ctx.agentLoop    = 当前采用的运行算法
-ReactLoopAgent   = 默认 Loop 创建出的 Agent 实例
+```yaml
+- insert:
+    - id: mcp-docs
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: docs
+        transport: streamable-http
+        url: https://example.com/mcp
 ```
 
-### Session 是事实，Agent 是活的控制面
+`id` 是这个实例在组件树中的稳定身份，`name` 是要导入的组件包，`config` 是传给该实例的配置。MCP Client 依赖 `ctx.tools`；Loader 会等 `dsh-base` 提供 Tools Service 后再激活它，然后它才把远端工具注册到 `ctx.tools`。
 
-Session 是一个 append-only 的 `SessionEvent` 日志。消息历史不是另一份可变数组，而是每次从日志的有效 Surface 推导出来。Turn、Step、模型输出块、工具调用与结果都会写入日志。
-
-项目坚持一条重要规则：**模型可见的内容必须被记录。** 只要某段信息进入模型请求，就必须能从 Session Log 重建。这让 Resume、Fork、Compaction、Telemetry 和 UI Replay 都基于同一份事实，而不是各自维护容易漂移的状态。
-
-Agent 则是进程内的活动对象：它管理 Inbox、取消信号、当前运行状态和 scoped Context。进程重启后可以从持久化 Session 重建新的 Agent，但旧 Agent 本身以及它持有的进程内资源不会被序列化。
-
-### Turn 和 Step 是默认 Loop 的运行单位
-
-默认 Loop 的一次运行路径可以压缩为：
+一个外部组件包的典型目录结构很简单：
 
 ```text
-输入进入 Agent Inbox
-        ↓
-打开 Turn，并领取 next-turn / next-step 输入
-        ↓
-agent/pre-step：允许插件拒绝或改写输入
-        ↓
-组装 System Prompt 与当前可见的 Tool Schema
-        ↓
-从 Session Log 推导模型历史，调用 ctx.llm
-        ↓
-把 Stream Chunk 与最终 Assistant Message 写回 Session
-        ↓
-通过 ctx.tools 执行 Tool Call，并记录 Tool Result
-        ↓
-如仍有工具结果或 Steering，开始下一个 Step；否则结束 Turn
+my-dsh-component/
+├── package.json          # 包名、运行入口和依赖
+├── src/index.ts          # 组件源码
+└── lib/index.js          # 构建后供 DSH 加载的入口
 ```
 
-因此一个 Turn 可以包含多个 Step；一个 Step 是一次模型请求及其触发的工具执行。Agent Loop 本身很薄，它把行为委托给 `sessions`、`systemPrompt`、`llm` 和 `tools`，并在这些边界上发出 Event。
+要把这样的外部组件加入 Web Profile，先安装它：
 
-## 5. DSH 的重要 Service 如何分层
+```sh
+dsh plugin --profile web add <component-package>
+```
 
-仓库中有很多 Service，但可以按职责压缩成六层：
+这一步只负责把包加入 `dependencies` 并安装到 Profile。若该包不是 bundle，CLI 会提醒它目前只是普通依赖；随后仍要像上面的 MCP 示例一样，在 `cordis.patch.yml` 中用 `insert` 注册一个实例。也就是说：**安装解决模块解析，patch 解决进入组件树。**
 
-| 层 | 重要 Service | 作用 |
+#### 方式二：通过 bundle 引入一组组件
+
+Bundle 不是另一种运行时组件，而是“预先写好的一组组件树 patch”的 npm 包。它适合一次带来多个相互配合的组件、默认配置和覆盖项。一个 bundle 在自己的 `package.json` 中声明：
+
+```json
+{
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
+```
+
+其中的 `cordis.patch.yml` 可以插入许多组件行，也可以覆盖更早 bundle 提供的行。安装外部 bundle 仍使用同一个命令：
+
+```sh
+dsh plugin --profile web add <bundle-package>
+```
+
+不同之处在于，CLI 安装后会识别 `dsh.bundle` 声明，并自动把真实包名追加到 Web Profile 的 `dsh.profile.bundles`。于是一次操作同时完成两件事：包进入 `dependencies`，它的 patch 也成为组件树的一个配置层。以后运行 `dsh web` 时，该层会在 `dsh-web-app` 之后、用户自己的 `cordis.patch.yml` 之前应用。
+
+### 1.4 一个组件单元怎么写
+
+第一种是 DSH 中最常见的具名导出写法，元数据和入口函数放在同一个模块中：
+
+```ts
+export const name = 'greeter-consumer'
+export const inject = ['greeter']
+export const Config = z.object({ who: z.string().required() })
+
+export function apply(ctx: Context, config: { who: string }) {
+  ctx.logger.info(ctx.greeter.greet(config.who))
+}
+```
+
+`name` 是组件名，`inject` 声明依赖的 Service，`Config` 定义配置 Schema，`apply(ctx, config)` 是入口执行函数。这个模块没有默认导出，Loader 会把它整体作为一个带 `apply` 的对象组件。
+
+这些元数据并非对象组件专属。第二种写法默认导出函数，可以通过 `Object.assign()` 把 `inject` 和 `Config` 挂到函数对象上：
+
+```ts
+const greetingPrinter = Object.assign(
+  async function greetingPrinter(ctx: Context, config: { who: string }) {
+    ctx.logger.info(ctx.greeter.greet(config.who))
+  },
+  {
+    inject: ['greeter'],
+    Config: z.object({ who: z.string().required() }),
+  },
+)
+
+export default greetingPrinter
+```
+
+函数本身是入口，函数名 `greetingPrinter` 是默认的组件名；Registry 还能直接从这个函数对象读取 `inject` 和 `Config`。
+
+第三种写法默认导出类，元数据写成静态字段：
+
+```ts
+export default class Heartbeat {
+  static inject = ['timer']
+  static Config = z.object({ interval: z.number().min(100).required() })
+
+  constructor(ctx: Context, config: { interval: number }) {
+    ctx.interval(() => ctx.logger.info('tick'), config.interval)
+  }
+}
+```
+
+类本身是入口，类名 `Heartbeat` 是默认的组件名；Registry 从类的静态属性读取 `inject` 和 `Config`，Fiber 则通过 `new Heartbeat(ctx, config)` 创建实例。`name`、`inject` 和 `Config` 都是可选元数据：没有 `inject` 表示不等待额外 Service，没有 `Config` 表示不使用 Schema 处理配置。无论采用哪种写法，Loader 最终交给 Registry 的都必须是函数、类或带 `apply` 函数的对象。
+
+## 2. Boot 如何从 Profile 构建运行时 Context
+
+第 1 章得到的只是最终组件行；Boot 还要把这些静态描述变成真正运行的组件实例。理解这一步，关键是先弄清楚所有组件都会收到的 `ctx`。
+
+### 2.1 Context（`ctx`）到底是什么
+
+`ctx` 的本质是 Cordis 的运行时容器。它以 `Proxy` 为统一入口，负责解析 Service、管理组件注册、分发事件并记录 Effect，让这些能力都可以通过同一个对象访问。
+
+`new Context()` 首先创建 Root Context。之后每注册一个组件实例，Cordis 都会为它创建一个 Fiber，并从父 Context 派生出绑定该 Fiber 的子 Context。子 Context 继承父 Context 的基础能力，组件通过它访问当前作用域内的 Service；组件注册的 Effect 则归对应 Fiber 管理。
+
+#### 基础成员与 Context 自身方法
+
+Root Context 直接保存基础成员；子 Context 通过原型链继承它们，并用自己的 `fiber`、`baseUrl` 或作用域信息覆盖父级值。
+
+| 成员 | 含义 |
+| --- | --- |
+| `ctx.root` | 始终指向 Root Context；只有根节点满足 `ctx.root === ctx`。 |
+| `ctx.baseUrl` | 相对模块与文件路径的解析基准。Root Context 初始为 `undefined`，子 Context 默认继承父级。 |
+| `ctx.fiber` | 拥有当前 Context 的 Fiber。Root Context 对应 `uid` 为 `0` 的 Root Fiber；组件的子 Context 对应该组件实例的 Fiber。 |
+| `ctx.reflect` | `Proxy` 背后的 Service 注册与解析层。 |
+| `ctx.registry` | 组件注册表，保存组件 Runtime，并负责创建 Fiber。 |
+| `ctx.events` | 事件总线。 |
+| `ctx.logger` | 日志服务。`ctx.logger('name')` 创建具名 Logger，`ctx.logger.info()` 直接记录日志。 |
+| `ctx[Context.isolate]`、`ctx[Context.intercept]` | 两个以 Symbol 为键的底层映射，分别记录 Service 隔离作用域与拦截配置。 |
+
+这些成员都出现在 `Context` 的类型声明中。`Context` 自己还定义了三个公开方法：
+
+| 方法 | 含义 |
+| --- | --- |
+| `extend(meta)` | 创建一个继承当前 Context 的子 Context，并添加局部信息。 |
+| `isolate(name, label?)` | 派生一个子 Context，为指定 Service 建立独立作用域。 |
+| `intercept(name, config)` | 派生一个子 Context，为指定 Service 添加只影响后代的配置。 |
+
+#### 快捷属性与方法
+
+为了避免每次都写 `ctx.reflect.get()`、`ctx.registry.plugin()`，Cordis 在初始化时调用 `mixin()`，把几个基础对象的成员映射到 `ctx` 顶层。它们不是复制出来的新实现；`Proxy` 会把调用转发给当前 Context 对应的基础对象。
+
+| 基础成员 | 映射到 `ctx` 的快捷入口 |
+| --- | --- |
+| `ctx.reflect` | `get()`、`set()`、`provide()`、`accessor()`、`mixin()` |
+| `ctx.fiber` | `runtime`、`effect()` |
+| `ctx.registry` | `inject()`、`plugin()` |
+| `ctx.events` | `on()`、`once()`、`parallel()`、`emit()`、`serial()`、`bail()`、`waterfall()` |
+
+### 2.2 Registry：把组件代码变成 Fiber
+
+Registry 可以分成两层理解：Runtime 记录“这是什么组件”，Fiber 代表“这个组件的一次运行实例”。
+
+`new Context()` 创建的 Registry 起初没有任何记录。每次调用 `ctx.plugin(component, config)`，Registry 都会依次完成三件事：
+
+1. 从 `component` 中取出入口执行函数，内部称为 `callback`。函数组件和类组件以自身作为 `callback`，对象组件则使用它的 `apply` 函数。
+2. 以 `callback` 的函数引用作为 key 查找 Runtime；找不到时才创建。Runtime 保存组件名称、入口函数 `callback`、配置 Schema，以及该组件的所有 Fiber。
+3. 为本次调用创建一个新 Fiber，保存本次传入的 `config` 和生命周期状态。
+
+所有 Context 共享同一个底层 Registry。Registry 负责按入口函数索引 Runtime 和 Fiber：
+
+```text
+所有 Context ──→ 同一个 Registry
+                  └── callback: Greeter
+                      └── Runtime
+                          ├── name / callback / Config schema
+                          └── fibers
+                              ├── Fiber A
+                              └── Fiber B
+```
+
+这里的 key 是函数引用，不是组件名、包名或组件行的 `id`。
+
+`ctx.inject(deps, callback)` 是在组件代码中临时挂载一段依赖逻辑的快捷方法。它不会创建带有 `id`、包名和配置的组件行，也不会写入 `cordis.yml`；内部只是构造 `{ inject: deps, apply: callback, name: callback.name }` 这个内存中的组件定义，再交给 `ctx.plugin()`。因此它同样会创建子 Fiber，并由 Fiber 管理依赖变化和卸载。
+
+因此，Registry 解决的是：**这段组件代码是否已经登记，以及这次注册要创建哪个 Fiber？**
+
+### 2.3 Fiber：管理一个组件实例的生命周期
+
+从代码结构看，一个组件 Fiber 的主要字段如下：
+
+| 成员 | 保存的内容 |
+| --- | --- |
+| `uid`、`name` | Registry 分配的实例编号，以及从 Runtime 或祖先继承的显示名称；Root Fiber 的 `uid` 为 `0`，销毁后变为 `null` |
+| `parent` | 创建当前 Fiber 时所使用的 Parent Context，通过 `parent.fiber` 可以找到父 Fiber |
+| `ctx` | 当前 Fiber 对应的 Context |
+| `runtime` | 该实例所属的 Runtime，包含组件入口和配置 Schema；Root Fiber 的值为 `null` |
+| `inject` | 组件声明的 Service 依赖表 |
+| `config` | 本次激活所使用的、经过校验和处理的组件配置 |
+| `store` | 保存本轮运行绑定的 Service；卸载完成后变为 `undefined` |
+| `state` | 当前生命周期状态 |
+| `inertia` | 当前正在进行的加载或卸载任务；状态稳定时为 `undefined` |
+| `dispose` | 卸载并永久移除这个组件实例 |
+
+Fiber 会在下面几个状态之间变化：
+
+```text
+PENDING（等待 Service）
+    ↓
+LOADING（执行组件代码）
+    ↓
+ACTIVE（组件正在运行）
+    ↓
+UNLOADING（执行清理）
+    ↓
+DISPOSED
+```
+
+Fiber 最核心的方法是 `effect()`，组件通常通过快捷入口 `ctx.effect()` 调用它。这正是 Cordis 中 **Revertible Effects** 的具体实现：执行一项会改变外部状态的操作时，同时提供撤销这项操作的清理函数。
+
+```ts
+function apply(ctx: Context) {
+  ctx.effect(() => {
+    const timer = setInterval(work, 1000)
+    return () => clearInterval(timer)
+  }, 'work-timer')
+}
+```
+
+传给 `effect()` 的函数会立即执行，返回的清理函数则由当前 Fiber 保存。组件卸载、重启或被移除时，Fiber 会自动执行清理；也可以调用 `effect()` 的返回值提前清理。`ctx.provide()`、`ctx.on()` 和 `ctx.plugin()` 建立的注册也采用这套机制，因此都会随所属 Fiber 一起撤销。
+
+Fiber 还提供一些生命周期辅助方法：`getEffects()` 用于查看已登记的 Effect，`await()` 用于等待加载或卸载完成，`restart()` 和 `update()` 用于重新激活组件，`dispose()` 用于永久移除实例，`assertActive()` 用于确认实例尚未销毁。
+
+除 Root Fiber 外，每个组件 Fiber 都由 `parentCtx.plugin(component, config)` 构造，同时得到一个与它对应的 Context。如果组件继续通过自己的 Context 调用 `ctx.plugin()`，新 Fiber 就会成为它的子节点。因此，组件树在内存中对应一棵由 Fiber 与 Context 共同组成的运行时树：
+
+```text
+Root Fiber ── Root Context
+├── Fiber A ── Context A
+│   └── Fiber C ── Context C
+└── Fiber B ── Context B
+```
+
+子 Fiber 的构造函数通过下面的方式，把自己的销毁流程挂到父 Fiber 上。简化后的代码如下：
+
+```ts
+childFiber.dispose = parentFiber.effect(() => {
+  return async () => {
+    // 从 Runtime 中移除并卸载 childFiber
+  }
+}, 'ctx.plugin()')
+```
+
+`parentFiber.effect()` 会生成一个 `dispose` 包装函数。父 Fiber 把它保存在自己的 `_disposables` 清理列表中，子 Fiber 则把同一个函数保存为 `childFiber.dispose`。
+
+因此有两个入口可以触发同一套销毁流程：主动调用 `childFiber.dispose()`，或者卸载父 Fiber。父 Fiber 卸载时会依次执行清理列表中的包装函数，于是子 Fiber 被卸载；子 Fiber 的清理列表中又保存着下一层子 Fiber 的包装函数，所以最终会递归卸载整棵子树。
+
+因此，Fiber 解决的是：**这个组件实例何时运行、依赖谁，以及卸载时要清理什么？**
+
+### 2.4 Reflect：组件如何提供和依赖 Service
+
+在 Cordis 中，一个组件不能直接依赖另一个组件或它的 Fiber。`ctx.plugin()` 只会把组件注册到 Registry 并创建 Fiber；组件还需要在入口执行时调用 `ctx.provide()`，才能把某项能力作为 Service 提供出来。另一个组件的 `inject` 声明依赖的正是这个 Service 名称。
+
+一棵组件树只有一份底层 Reflect。Root Context 创建它以后，所有子 Context 都继续使用其中的 `props` 和 `store`：
+
+```text
+Root Context ─────┐
+Child Context A ──┼──→ 同一个 Reflect
+Child Context B ──┘     ├── props
+                        └── store
+```
+
+两张表的分工如下：
+
+| 记录 | 保存什么 | key | 是否区分 Service 作用域 |
+| --- | --- | --- | --- |
+| `props` | 属性的解析规则，例如 Service 或 accessor | 属性名，例如 `greeter` | 否，整棵树共享一条属性定义 |
+| `store` | Service 的实际实现 `Impl`，包括 `value` 和所属 Fiber | 一个 Symbol | 是，同名 Service 可以在不同作用域中有不同实现 |
+
+`props.greeter = { type: 'service' }` 只告诉 Proxy：“读取 `ctx.greeter` 时，应该把它当作 Service 处理。”真正返回哪个对象，还要去 `store` 查找。
+
+#### Service 隔离：让同名 Service 使用不同实现
+
+Service 的实现保存在 `reflect.store` 中，但它的 key 不是 Service 名称，而是记录在 `ctx[Context.isolate]` 中的 Symbol：
+
+```text
+ctx[Context.isolate].greeter → Symbol A
+reflect.store[Symbol A]      → greeter 的实现
+```
+
+之所以多出这层映射，是为了让不同 Context 可以为同名 Service 使用不同实现。普通子 Context 派生时会继承 Parent Context 的映射，所以两者查询 `greeter` 时使用同一个 Symbol，也就找到同一个实现。
+
+通过 `isolate()` 派生时，Cordis 会为子 Context 创建一层新映射，并只给指定的 Service 换一个 Symbol：
+
+```ts
+const child = ctx.isolate('greeter')
+```
+
+```text
+Parent Context：greeter → Symbol A
+Child Context： greeter → Symbol C
+```
+
+Parent Context 不会被修改，其他 Service 仍然继承 Parent Context 的 Symbol。此后，Parent Context 下的组件通过 `Symbol A` 查找 `greeter`，Child Context 下的组件则通过 `Symbol C` 查找，因此两边可以分别注册和使用自己的 `greeter` 实现。`isolate()` 只改变查找所用的 Symbol，本身不会注册 Service。
+
+#### `provide` 注册 Service 的详细过程
+
+下面的 `greeterComponent` 是一个普通组件，它在入口中提供名为 `greeter` 的 Service：
+
+```ts
+const greeterComponent = {
+  name: 'greeter-component',
+  apply(ctx: Context) {
+    const greeterService = {
+      greet: (who: string) => `Hello, ${who}!`,
+    }
+    ctx.provide('greeter', greeterService)
+  },
+}
+```
+
+这里的 `ctx` 是创建 `greeterComponent` 对应的 Fiber 时，从 Parent Context 派生出的专属 Context；`greeterService` 是要提供的具体对象。`ctx.provide()` 是 `ctx.reflect.provide()` 的快捷方式，内部依次完成以下操作：
+
+1. 在 `props` 中把 `greeter` 标记为 Service。
+2. 确保 Root Context 中存在 `greeter` 的默认 Symbol。
+3. 从当前 Context 的“门牌表”取得 `greeter` 实际使用的 Symbol；如果当前 Context 隔离过 `greeter`，这里取得的就是隔离后的 Symbol。
+4. 创建包含 Service 名称、实际对象和所属 Fiber 的 `Impl`。
+5. 把注册过程包装成当前 Fiber 的 Effect，使 Fiber 卸载时自动删除 Service。
+
+最终形成下面的结构：
+
+```text
+ctx.reflect.props.greeter = { type: "service" }
+
+Impl
+├── name: "greeter"
+├── value: greeterService
+└── fiber: greeterComponent 对应的 Fiber
+
+当前 Context 的门牌表
+└── greeter ──→ Symbol A
+
+同一个 Impl 可以被多处引用
+├── ctx.reflect.store[Symbol A] ──→ Impl
+├── greeterComponent 对应的 Fiber.store.greeter ──→ Impl
+└── 成功解析该实现的各个 Consumer Fiber.store.greeter ──→ Impl
+```
+
+`provide()` 执行时会先把 `Impl` 放入 `reflect.store` 和提供者自己的 `Fiber.store`；Consumer 解析 `inject` 时，从 `reflect.store` 取出同一个 `Impl`，并在激活时放入自己的 `Fiber.store`。因此提供者和 Consumer 都可以通过各自的 `ctx.greeter` 访问同一个 `Impl.value`。Service 的生命周期所有者由 `Impl.fiber` 记录。
+
+如果 `greeterComponent` 只创建了 Fiber，却没有调用 `provide()`，Reflect 中就不会出现 `greeter`，依赖它的 Fiber 会停在 `PENDING`。`greeterComponent` 仍然可以监听事件或启动定时器，只是不能被其他组件通过 `inject` 依赖。`greeterComponent` 对应的 Fiber 卸载时，`provide()` 对应的 Effect 还会自动删除 Service，并让依赖它的 Fiber 回到等待状态。
+
+#### Reflect 的其他快捷方法
+
+除了 `provide()`，Reflect 还提供四个相关方法：
+
+| 快捷方法 | 能力 | 背后的机制 |
 | --- | --- | --- |
-| Agent 核心骨架 | `sessions`、`agents`、`agentLoop`、`systemPrompt`、`tools`、`llm` | 保存事实、驱动 Turn/Step、组装请求、调用模型和工具。 |
-| 执行环境 | `fs`、`subprocess`、`shell`、`terminals`、`sandbox`、`sandboxPolicy`、`lsp`、`codeRuntime` | 把模型动作落到本地、受限环境或远程 Sandbox。 |
-| Agent 能力 | `skills`、`web`、`subagents`、`workflowEngine`、`jobs`、`compaction`、`goals`、`planMode` | 在核心循环之外增加检索、委派、工作流、长任务和上下文管理。 |
-| 数据与恢复 | `sessionPersistence`、`sessionQuery`、`sessionProjections`、`attachments`、`spillStore`、`storage` | 持久化日志、查询 Session、生成投影和保存大对象。 |
-| 配置与人机协作 | `settings`、`credentials`、`approval`、`permissionPresets`、`commands`、`userQuestions` | 管理配置、凭证、权限、命令与用户确认。 |
-| 交付界面 | `typert`、`typertGateway`、`apiProxy`、`webServer`、`clientModules`、浏览器端 `slots` | 把 Host 能力安全地投影到 SDK、API 和 Web UI。 |
+| `ctx.get(name)` | 探测一个可选 Service | 根据当前 Context 的隔离作用域在 `store` 中查找，默认只返回已激活的实现 |
+| `ctx.set(name, value)` | 更新 Service 的实现值 | 找到当前作用域中的记录；只有提供该 Service 的 Fiber 才能修改 |
+| `ctx.accessor(name, hooks)` | 给 `ctx` 增加一个按需读取的属性 | 读取 `ctx[name]` 时调用传入的 `get`；写入时调用可选的 `set` |
+| `ctx.mixin(source, keys)` | 把 Service 的方法直接暴露在 `ctx` 上，添加快捷方式 | 例如 `ctx.mixin('timer', ['setTimeout'])` 让 `ctx.setTimeout()` 转发到 `ctx.timer.setTimeout()` |
 
-最核心的依赖链是：
+两者的区别是：`accessor()` 由组件自己编写单个属性的读取和写入逻辑；`mixin()` 则在内部为多个成员批量创建这样的 accessor。它们都只在 `props` 中登记访问规则，不会向 `reflect.store` 注册 Service。
 
-```text
-Agent Loop
-├── sessions：读取和追加持久事实
-├── systemPrompt：收集 Prompt Section 与 Tool Schema
-├── llm：选择模型适配器并产生流
-└── tools：查找工具并经过受控执行管线
-      ├── fs / shell / web / subagents / workflow ...
-      └── approval / sandbox / timeout / spill 等策略
-```
+`provide()` 和这四个方法都没有复制到 Context 对象上。Reflect 初始化时调用 `mixin('reflect', ...)`，在 `props` 中为它们创建 accessor；读取 `ctx.get` 时，外层 Proxy 会把调用转发给当前 Context 的 `ctx.reflect.get`。`runtime`、`plugin` 和 `on` 等快捷入口也使用相同机制，分别转发到 Fiber、Registry 和 Events。初始化完成后，`props` 中已有 16 个快捷入口，而 `store` 仍为空；以后调用 `provide()` 或 `accessor()` 时，`props` 才会继续增加记录。
 
-这也是 DSH 对 Agent 的核心判断：Agent 不是一个巨大的自主对象，而是一个很小的运行控制器；大部分能力位于它依赖的 Service 和 Event 扩展点中。
+因此，Reflect 解决的是：**当前作用域中哪个 Service 实现可用，如何通过 `ctx` 访问它，以及依赖它的 Fiber 何时运行？**
 
-## 6. 哪些 Service 可以覆盖，以及如何覆盖
+### 2.5 Events：组件如何发送和监听事件
 
-“可替换”在 DSH 中至少有四种不同含义。
-
-### 6.1 替换一个单实例 Service 的实现
-
-同一个 Context realm 中，一个 Service 名只能有一份实现。第二个组件直接提供同名 Service 会报错，而不是悄悄覆盖。因此替换 `ctx.fs`、`ctx.shell` 或 `ctx.sessionPersistence` 的正确方式，是在配置层禁用或替换原来的行，再挂载兼容实现。
-
-典型的可替换能力包括：
-
-- Session Persistence：JSONL 或 SQLite；
-- Filesystem：Local、Sandbox 或 E2B；
-- Subprocess：Local 或 E2B；
-- Shell：本地 Bash、Sandbox Bash 或 PowerShell；
-- Sandbox、Code Runtime、Compaction、Workflow Engine、Spill Store；
-- Agent Loop 本身。
-
-这里的“兼容”很重要：替换组件仍要提供相同的 Service 接口和生命周期语义，否则依赖者虽然能被激活，运行时行为仍会错误。
-
-### 6.2 保留注册表 Service，替换或增加其中的条目
-
-另一些 Service 本身就是注册表，常见扩展方式不是替换整个 Service，而是向其中注册条目：
-
-- `ctx.llm` 按 provider route 注册模型适配器；
-- `ctx.tools` 按工具名注册 Tool Definition；
-- `ctx.systemPrompt` 按名称注册 Section、Variable 和 Context；
-- `ctx.web` 按 id 注册 Search / Fetch 实现；
-- `ctx.skills` 注册 Skill 来源；
-- `ctx.subagents` 注册不同的 Subagent 实现。
-
-同一层出现重复名称通常会失败；在 Agent Scope 中注册时，则可以对该 Agent 遮蔽同名的全局条目。例如一个 Agent 可以拥有自己的 Persona、工具版本或能力限制，而不影响其他 Agent。
-
-### 6.3 用 `isolate` 为某个组合建立私有 Service 空间
-
-Cordis 的 `isolate` 让同一个 Service 名在不同 realm 中解析到不同实现。DSH 的 Agent Preset 使用它承载真正属于单个组合的 Service。
-
-例如 [`minimal` preset](https://github.com/deepseek-ai/deepseek-harness/blob/main/apps/cli/config/agent-presets/minimal/agent.cordis.yml) 在自己的 realm 中提供 `terminals`，并用一个本地 `fs` 遮蔽 Host 的 Sandbox 文件系统。其他 Agent 仍然使用 Host 原来的实现。
-
-但不是所有 Service 都适合放入 Agent realm。Session Store、持久化、Sandbox Policy、模型路由、Subagent Registry 等被 Host 或多个 Session 共同使用，必须留在 Host Plane。Preset 中新增一个会提供 Service 的组件时，如果它不属于 Host，就必须显式放入 `isolate`；否则它会泄漏到进程级空间并与其他 Preset 冲突。
-
-### 6.4 不替换 Service，只通过 Event 改写行为
-
-很多需求根本不需要替换 Service：
-
-- 模型请求重试可以包裹 `llm/stream`；
-- Compaction 可以介入 `agent/pre-step`；
-- Tool Timeout 可以介入工具执行管线；
-- 权限与文件观察策略可以监听能力事件；
-- Goal Driver 可以在 Turn 即将结束时继续 Steering。
-
-这种扩展保留核心 Service，只替换某一段决策，更容易与其他插件组合。
-
-## 7. Host Plane、Agent Plane 与 Client Plane
-
-DSH 不是只有一棵平坦的插件树，而是存在三个重要组合空间。
-
-### Host Plane：整个进程共享的基础设施
-
-Host Plane 放置跨 Session 共享或被入口层读取的 Service，例如 Session Store、Persistence、LLM Registry、Tool Registry、Sandbox、Approval、Settings、Credentials、Subagent Registry 和 API Gateway。
-
-### Agent Plane：一个 Agent 看见的能力组合
-
-Web 模式通过 Agent Preset 决定每个 Agent 的 Persona、工具、Prompt Section、Compaction、Workflow 等能力。标准 Preset 的组件只挂载一次，多个 Agent 通过 scope parent chain 加入它：
+一棵组件树共享同一个 Events，内部的监听表以事件名为 key，以监听器数组为 value：
 
 ```text
-Agent 自己的 Scope
-        ↓
-所选 Preset 的 Scope
-        ↓
-Host 的全局 Scope
+Events
+└── "greeter/used"
+    ├── { ctx: Context A, callback: listenerA }
+    └── { ctx: Context B, callback: listenerB }
 ```
 
-读取时越近的注册优先，所以 Agent 可以遮蔽 Preset，Preset 又可以遮蔽全局注册。不同 Session 的可变状态仍由 Session 或 Agent 作为 key 隔离。
+调用 `ctx.on('greeter/used', callback)` 时，Cordis 会在对应数组中加入一条记录，其中包含回调和当前 Context。保存 Context 是为了在发送带有作用域目标的事件时过滤监听器；这项注册同时归当前 Fiber 管理，组件卸载时会自动移除。`ctx.on()` 返回的函数也可以提前取消监听。
 
-Preset 并不会在运行中的任意时刻随意切换。DSH 只允许尚未产生内容的 Agent 更换 Preset；一旦 Session 已记录模型请求或工具调用，换一套工具与 Prompt 会让历史中的语义和当前能力不一致。已经加入某个 Preset 的 Agent 也会继续使用当时的 generation，文件修改只影响之后创建的 Agent。
+调用 `ctx.emit('greeter/used', 'DSH')` 时，Events 使用同一个事件名找到数组，完成作用域过滤后，将 `'DSH'` 依次传给留下的回调。事件没有监听器时，调用不会产生效果。
 
-### Client Plane：浏览器里另一套 Cordis 运行时
+```ts
+ctx.on('greeter/used', (who) => {
+  ctx.logger.info(`greeted ${who}`)
+})
 
-Web UI 也由插件组成，但它运行在浏览器自己的 Cordis Context 中。Host 负责 API 与模块清单，Client 插件通过 Slot Registry 向侧边栏、会话区、输入框和 Tool Card 等位置注册 UI。Host Service 不会因为名字相同就自动出现在 Client；它们必须通过 Typert/API Gateway 明确投影到另一侧。
+ctx.emit('greeter/used', 'DSH')
+```
 
-这说明 “Everything is a plugin” 并不等于“所有插件都在同一个全局容器里”。Service 的可见性同时受进程、realm、Agent scope 和 Host/Client 边界限制。
+不同发送方法决定监听器怎样执行：
 
-## 8. “Everything is a plugin” 的真正边界
+| 方法 | 执行方式 |
+| --- | --- |
+| `emit()` | 同步调用全部监听器，不等待 Promise。 |
+| `parallel()` | 并发调用全部监听器并等待完成。 |
+| `serial()` | 依次等待，遇到第一个有效返回值时停止。 |
+| `bail()` | `serial()` 的同步版本。 |
+| `waterfall()` | 监听器通过 `next()` 包裹后续处理，也可以不调用 `next()` 来截断。 |
 
-DSH 的插件化程度很高：模型适配器、Agent Loop、Session Store、工具、持久化、Sandbox 策略、API 和 UI 都能在组合中出现。但它并不意味着任何东西都可以无条件热替换。
+### 2.6 Boot 如何建立并更新组件树
 
-### Cordis 自身不是插件
+`runProfile()` 会先读取 Profile 的 `package.json`，按顺序收集 bundle patch、Profile patch、全局用户 patch 和命令行覆盖层。随后 `boot()` 创建 Root Context，启动过程才正式进入 Cordis。
 
-Context、Fiber、Effect 记录、Service 解析、Loader 以及承载它们的 JavaScript 进程是更底层的运行时。DSH 的“所有东西”指产品能力，而不是这套运行时本身。
+#### Root Context 创建后的默认行为
 
-### 接口和持久化语义不能被随意破坏
+1. `new Context()` 创建 Root Fiber，以及 `reflect`、`registry`、`events`、`logger` 四项基础能力。
+2. `boot()` 设置组件包的解析基准 `baseUrl`，然后调用 `ctx.provide('dshHomePath', dshHomePath)`，将路径生成函数 `dshHomePath` 注册为 Root Context 上的第一个 Service。例如，`dshHomePath('sessions')` 会返回 `$DSH_HOME/sessions` 的绝对路径，Loader 解析配置中的 `!!js` 表达式时也可以使用它。
+3. DSH 把代码中静态导入的 Loader 作为第一个组件交给 `ctx.plugin()`。Loader 不能依赖尚未建立的组件树来加载自己，所以必须先由 Boot 直接启动。Registry 此时创建第一条 Runtime 和对应的 Fiber；Loader 激活后提供 `ctx.loader` Service。
 
-组件实现可以替换，但 `Agent`、`SessionEvent`、Tool、LLM Stream 等接口是组件合作的共同语言。替换 Agent Loop 仍要满足 Agent Service 的创建、取消、所有权与日志约束；替换 Persistence 仍要维护 append-only、序号连续和 Crash Repair 语义。
+#### Loader 如何加载整棵组件树
 
-### 只有被登记的 Effect 才能自动撤销
-
-`ctx.effect()`、`ctx.on()` 以及返回 disposer 的注册方法能随 Fiber 卸载。组件如果绕开这些机制修改全局变量、启动未登记的后台任务或改变外部系统，Cordis 无法自动恢复。数据库写入、已发送的邮件或支付请求更不在 Context 的回滚范围内。
-
-### 插件化不是安全隔离
-
-一个 Preset 本质上是可执行组合，权限接近 Shell。DSH 的 Cordis 创造模式允许 Agent 检查运行时并临时 `define/run/stop` 动态组件，但这些组件只存在于进程内存，默认不能自动持久化，而且 VM 只是诚实代码的隔离层，不是安全边界。
-
-### 运行时能力不等于默认全部开启
-
-Cordis 支持配置协调和 HMR，但当前 Web 与 Headless Bundle 默认关闭通用 HMR。DSH 更谨慎的路径是：新 Session 使用更新后的 Preset generation，或者在明确授权的 Cordis 模式中运行临时组件。这避免了“理论上可热替换”被误解为“任何生产中的 Agent 都会随文件变化立即重组”。
-
-### 有些行为仍属于默认 Loop 的算法
-
-插件可以通过 Service 和 Event 改变大量行为，但 Turn/Step 状态机、日志边界和工具调度仍由默认 `agent-loop` 实现。如果要改变这些根本语义，应替换整个 Loop，并继续遵守外部契约，而不是在内部随意打补丁。
-
-所以更准确的说法是：
-
-> DSH 尽可能把产品能力设计成有明确契约和生命周期的插件，但插件仍运行在 Cordis、进程、持久化格式、信任模型与跨端协议所划定的边界内。
-
-## 9. 最后把整套架构串起来
-
-从启动到一次模型请求，DSH 的完整路径可以压缩为：
+DSH 每次启动都会把 Profile 下的 `cordis.yml` 写成空数组 `[]`。它只用来确定 Profile 目录和模块解析位置，真正的组件行来自各层 `cordis.patch.yml`：
 
 ```text
-Profile + Bundles + Patches
+空的 cordis.yml
+        +
+bundle patches → Profile patch → $DSH_HOME/cordis.patch.yml → --patch 等覆盖层
         ↓
-Loader 建立 Host Component / Fiber Tree
+Include 组合出最终组件行
         ↓
-Service 依赖决定组件何时激活
+Loader 为每行创建 Entry 和 entry.ctx
         ↓
-入口通过 ctx.agents 创建 Agent 与 Session
+按 name 导入组件包
         ↓
-Agent Scope 加入所选 Preset，得到自己的工具和 Prompt 视图
+entry.ctx.registry.plugin(component, config)
         ↓
-Agent Loop 从 Inbox 开启 Turn / Step
-        ↓
-Session + SystemPrompt + LLM + Tools 协作完成请求
-        ↓
-所有模型可见事实写回 Session Log
-        ↓
-UI / SDK / Persistence / Telemetry 从 Event 与投影读取同一份事实
+创建 Fiber；inject 满足后激活组件
 ```
 
-Cordis 负责的是竖向的生命周期：组件何时存在、依赖何时满足、退出时如何清理。DSH 负责的是横向的产品语义：什么是 Agent、一次 Turn 如何运行、哪些事实必须持久化、工具和模型如何接入、不同 Session 能看到哪些能力。
+Loader 就绪后，Boot 先登记 `cordis:include` 和 `cordis:group` 两个内置组件，再创建一个固定 `id` 为 `include` 的根组件行。Include 读取 `cordis.yml`、按顺序应用所有 patch，并把最终组件行交给 Loader 的 Entry Tree。
 
-这两层结合后，“Everything is a plugin” 才不只是代码目录很多，而是一条真正可执行的架构原则：默认产品本身就是一份组合，扩展与替换使用的机制和系统启动自身使用的是同一套机制。
+最终形成的 Context 层次大致如下：
+
+```text
+Root Context
+└── Loader Context
+    └── Include Context
+        ├── 组件行 A 的 Context
+        ├── 组件行 B 的 Context
+        └── Group Context
+            ├── 子组件行 C 的 Context
+            └── 子组件行 D 的 Context
+```
+
+#### `cordis.patch.yml` 如何触发运行时更新
+
+初次启动成功后，`runProfile()` 会确保 `timer` 和 `hmr` Service 可用，再通过 HMR 分别监听：
+
+- `$DSH_HOME/profiles/web/cordis.patch.yml`
+- `$DSH_HOME/cordis.patch.yml`
+
+HMR 会监听文件的创建、修改和删除。任一文件发生变化时，DSH 都会重新读取这两个用户 patch，再与原有的 bundle patch 和启动覆盖层重新组合，最后把新的完整 patch 列表交给根 Include：
+
+```text
+patch 文件变化
+        ↓
+重新读取两个用户 patch
+        ↓
+重新组合全部 patch 层
+        ↓
+更新根 Include
+        ↓
+Loader 按 id 对比新旧 Entry Tree
+        ↓
+创建、更新、替换或删除对应 Fiber
+```
+
+| 组件行变化 | Loader 的处理 |
+| --- | --- |
+| 增加新 `id` | 导入组件并创建新的 Fiber。 |
+| 删除一行或设为 `disabled` | 销毁对应 Fiber，并撤销它拥有的 Effect。 |
+| `id` 不变，只修改 `config` | 更新原 Fiber 的配置，并重新激活组件。 |
+| 修改 `name`、`inject` 或分组 | 销毁旧 Fiber，再用新定义创建 Fiber。 |
+
+这次更新按事务处理。如果新组件树应用失败，Loader 会尽量恢复上一次成功的组件树，HMR 则记录错误并发送 `hmr/config-update-failed`。替换 Service 提供方时，依赖它的 Fiber 会在旧实现消失后进入等待，并在新实现可用后重新激活。
+
+因此，修改这两个被监听的用户 `cordis.patch.yml` 不需要重启 DSH。Profile 的 `package.json`、bundle 清单、bundle 自带的 patch 和组件包代码不属于这条配置监听链路，修改后仍需重启。
+
+## 参考资料
+
+- [DeepSeek Harness 源码](https://github.com/deepseek-ai/deepseek-harness)
