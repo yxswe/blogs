@@ -1,0 +1,6 @@
+interface:
+  display_name: "Bilingual Blog Reviewer"
+  short_description: "Review bilingual blog logic and contextual flow"
+  default_prompt: "Use $blog-review to review the changed article prose for contextual coherence and logical soundness."
+policy:
+  allow_implicit_invocation: true

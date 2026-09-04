@@ -1,0 +1,6 @@
+interface:
+  display_name: "Bilingual Blog Author"
+  short_description: "Explore deeply before writing bilingual blog posts"
+  default_prompt: "Use $blog-author to explore my topic over multiple rounds and prepare a bilingual blog post only after I approve writing."
+policy:
+  allow_implicit_invocation: true
