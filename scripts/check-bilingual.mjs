@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { extname, join, relative, sep } from 'node:path';
 
 const root = process.cwd();
-const ignoredDirectories = new Set(['.astro', '.git', '.github', 'dist', 'node_modules', 'public', 'scripts', 'src']);
+const ignoredDirectories = new Set(['.agents', '.astro', '.draft', '.git', '.github', 'dist', 'node_modules', 'public', 'scripts', 'src']);
 const ignoredRootFiles = new Set(['README.md', 'CONTRIBUTING.md', 'AGENTS.md']);
 const requiredFields = ['title', 'description', 'lang', 'translationKey', 'date', 'tags', 'featured'];
 

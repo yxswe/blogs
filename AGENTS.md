@@ -15,6 +15,7 @@ The bilingual validator in `scripts/check-bilingual.mjs` is the executable sourc
 ## Contextual coherence
 
 - After every content edit, reread the surrounding paragraphs and subsection as a whole. Ensure the revised text connects naturally with what comes before and after, keeps terminology consistent, and introduces no repetition, contradiction, abrupt transition, or dangling reference; revise adjacent text when necessary.
+- Whenever publishable article prose changes, read and apply `.agents/skills/blog-review/SKILL.md` before validation or handoff. This review is mandatory for both language versions; draft-only and metadata-only changes do not trigger it.
 
 ## One article per development branch
 

@@ -8,6 +8,8 @@ const posts = defineCollection({
       '**/*.md',
       '!node_modules/**',
       '!src/**',
+      '!.agents/**',
+      '!**/.draft/**',
       '!.github/**',
       '!README.md',
       '!CONTRIBUTING.md',
