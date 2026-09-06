@@ -4,6 +4,7 @@ import { extname, join, relative, sep } from 'node:path';
 const root = process.cwd();
 const ignoredDirectories = new Set(['.agents', '.astro', '.draft', '.git', '.github', 'dist', 'node_modules', 'public', 'scripts', 'src']);
 const ignoredRootFiles = new Set(['README.md', 'CONTRIBUTING.md', 'AGENTS.md']);
+const ignoredFiles = new Set(['draft.md', 'optional_topics.md']);
 const requiredFields = ['title', 'description', 'lang', 'translationKey', 'date', 'tags', 'featured'];
 
 async function collectMarkdown(directory = root) {
@@ -13,7 +14,11 @@ async function collectMarkdown(directory = root) {
     if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await collectMarkdown(path));
-    else if (extname(entry.name).toLowerCase() === '.md' && !(directory === root && ignoredRootFiles.has(entry.name))) files.push(path);
+    else if (
+      extname(entry.name).toLowerCase() === '.md'
+      && !ignoredFiles.has(entry.name)
+      && !(directory === root && ignoredRootFiles.has(entry.name))
+    ) files.push(path);
   }
   return files;
 }

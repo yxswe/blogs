@@ -11,6 +11,8 @@ const posts = defineCollection({
       '!.agents/**',
       '!**/.draft/**',
       '!.github/**',
+      '!**/draft.md',
+      '!**/optional_topics.md',
       '!README.md',
       '!CONTRIBUTING.md',
       '!AGENTS.md',
